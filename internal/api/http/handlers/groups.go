@@ -60,6 +60,10 @@ func CreateGroup(s *Server, c *gin.Context) {
 	}
 	g, err := s.App.CreateGroup(req.Name, req.PosX, req.PosY)
 	if err != nil {
+		if service.IsRuntimeFailure(err) {
+			c.JSON(http.StatusServiceUnavailable, gin.H{"error": err.Error()})
+			return
+		}
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
@@ -86,6 +90,10 @@ func UpdateGroup(s *Server, c *gin.Context) {
 	}
 	g, _, err := s.App.UpdateGroupFields(id, req.Name, req.PosX, req.PosY, req.AllowIntraGroup)
 	if err != nil {
+		if service.IsRuntimeFailure(err) {
+			c.JSON(http.StatusServiceUnavailable, gin.H{"error": err.Error()})
+			return
+		}
 		c.JSON(http.StatusNotFound, gin.H{"error": "group not found"})
 		return
 	}
@@ -110,6 +118,10 @@ func DeleteGroup(s *Server, c *gin.Context) {
 		return
 	}
 	if err := s.App.DeleteGroup(id); err != nil {
+		if service.IsRuntimeFailure(err) {
+			c.JSON(http.StatusServiceUnavailable, gin.H{"error": err.Error()})
+			return
+		}
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
@@ -156,6 +168,10 @@ func CreateGroupLink(s *Server, c *gin.Context) {
 		bidir = *req.Bidirectional
 	}
 	if err := s.App.CreateGroupLink(req.FromGroupID, req.ToGroupID, bidir); err != nil {
+		if service.IsRuntimeFailure(err) {
+			c.JSON(http.StatusServiceUnavailable, gin.H{"error": err.Error()})
+			return
+		}
 		if errors.Is(err, service.ErrSelfLink) {
 			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 			return
@@ -173,6 +189,10 @@ func DeleteGroupLink(s *Server, c *gin.Context) {
 		return
 	}
 	if err := s.App.DeleteGroupLink(req.FromGroupID, req.ToGroupID); err != nil {
+		if service.IsRuntimeFailure(err) {
+			c.JSON(http.StatusServiceUnavailable, gin.H{"error": err.Error()})
+			return
+		}
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}

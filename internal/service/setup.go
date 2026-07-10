@@ -50,12 +50,29 @@ type SetupInput struct {
 
 // Setup initializes the hub database and starts the network stack when available.
 func (a *App) Setup(in SetupInput) error {
+	a.controlMu.Lock()
+	defer a.controlMu.Unlock()
+	return a.setup(in, "", false)
+}
+
+// SetupWithToken performs the setup transition after rechecking token and state
+// while holding the application lifecycle lock.
+func (a *App) SetupWithToken(in SetupInput, token string) error {
+	a.controlMu.Lock()
+	defer a.controlMu.Unlock()
+	return a.setup(in, token, true)
+}
+
+func (a *App) setup(in SetupInput, token string, requireToken bool) error {
 	configured, err := a.store.IsConfigured()
 	if err != nil {
 		return err
 	}
 	if configured {
 		return ErrAlreadyConfigured
+	}
+	if requireToken && !a.setupTokenValid(token) {
+		return ErrSetupTokenRequired
 	}
 	listenPort := in.ListenPort
 	if listenPort == 0 {
@@ -85,28 +102,43 @@ func (a *App) Setup(in SetupInput) error {
 func (a *App) startNetworkAfterSetup() error {
 	net := a.Hub.NetworkRuntime()
 	if net == nil {
-		return ErrNetworkUnavailable
+		return a.stopAfterRuntimeFailure("setup", ErrNetworkUnavailable)
 	}
 	bundle, err := a.LoadSyncBundle()
 	if err != nil {
-		_ = a.store.ResetAll()
-		return err
+		return a.stopAfterRuntimeFailure("setup", err)
 	}
 	if err := net.Start(bundle); err != nil {
-		_ = a.store.ResetAll()
-		return err
+		return a.stopAfterRuntimeFailure("setup", err)
 	}
 	return nil
 }
 
 // ImportDatabase replaces the SQLite file before the hub is configured.
 func (a *App) ImportDatabase(tmpPath string) error {
+	a.controlMu.Lock()
+	defer a.controlMu.Unlock()
+	return a.importDatabase(tmpPath, "", false)
+}
+
+// ImportDatabaseWithToken performs the import transition after rechecking the
+// setup token and configured state under the same lifecycle lock as setup/reset.
+func (a *App) ImportDatabaseWithToken(tmpPath, token string) error {
+	a.controlMu.Lock()
+	defer a.controlMu.Unlock()
+	return a.importDatabase(tmpPath, token, true)
+}
+
+func (a *App) importDatabase(tmpPath, token string, requireToken bool) error {
 	configured, err := a.store.IsConfigured()
 	if err != nil {
 		return err
 	}
 	if configured {
 		return ErrImportWhenConfigured
+	}
+	if requireToken && !a.setupTokenValid(token) {
+		return ErrSetupTokenRequired
 	}
 	if err := a.store.ImportDatabase(tmpPath); err != nil {
 		return err
@@ -117,9 +149,12 @@ func (a *App) ImportDatabase(tmpPath string) error {
 	}
 	bundle, err := a.LoadSyncBundle()
 	if err != nil {
-		return err
+		return a.stopAfterRuntimeFailure("database import", err)
 	}
-	return net.Start(bundle)
+	if err := net.Start(bundle); err != nil {
+		return a.stopAfterRuntimeFailure("database import", err)
+	}
+	return nil
 }
 
 // PrepareDBUploadDir ensures the data directory exists for setup import.
@@ -131,6 +166,40 @@ func (a *App) PrepareDBUploadDir() (dataDir string, err error) {
 
 // Reset stops the network stack and clears all hub data after password verification.
 func (a *App) Reset() error {
+	a.controlMu.Lock()
+	defer a.controlMu.Unlock()
+	return a.reset()
+}
+
+// ResetWithSetupToken atomically resets the hub and publishes the new token
+// only after the reset succeeds. The caller updates its delivery-layer copy
+// after this method returns.
+func (a *App) ResetWithSetupToken(newToken string) error {
+	a.controlMu.Lock()
+	defer a.controlMu.Unlock()
+	if err := a.reset(); err != nil {
+		return err
+	}
+	a.SetSetupToken(newToken)
+	return nil
+}
+
+// ResetWithAdminPassword keeps credential verification and the destructive
+// lifecycle transition in one serialized operation.
+func (a *App) ResetWithAdminPassword(username, password, newToken string) error {
+	a.controlMu.Lock()
+	defer a.controlMu.Unlock()
+	if _, err := a.VerifyAdminPassword(username, password); err != nil {
+		return err
+	}
+	if err := a.reset(); err != nil {
+		return err
+	}
+	a.SetSetupToken(newToken)
+	return nil
+}
+
+func (a *App) reset() error {
 	net := a.Hub.NetworkRuntime()
 	if net == nil {
 		return ErrNetworkUnavailable
@@ -149,4 +218,5 @@ func (a *App) IsConfigured() (bool, error) {
 var (
 	ErrAlreadyConfigured    = errors.New("already configured")
 	ErrImportWhenConfigured = errors.New("hub is already configured; reset before importing a database")
+	ErrSetupTokenRequired   = errors.New("setup token required")
 )

@@ -44,7 +44,16 @@ func (a *App) GetGroupNameMap() map[uint]string {
 
 // CreateGroup adds a new peer group.
 func (a *App) CreateGroup(name string, posX, posY float64) (*repo.PeerGroup, error) {
-	return a.store.CreateGroup(name, posX, posY)
+	a.controlMu.Lock()
+	defer a.controlMu.Unlock()
+	g, err := a.store.CreateGroup(name, posX, posY)
+	if err != nil {
+		return nil, err
+	}
+	if err := a.reconcileRuntime("group creation", false); err != nil {
+		return nil, err
+	}
+	return g, nil
 }
 
 // GetGroup loads a group by id.
@@ -54,20 +63,42 @@ func (a *App) GetGroup(id uint) (*repo.PeerGroup, error) {
 
 // UpdateGroup persists group fields.
 func (a *App) UpdateGroup(g *repo.PeerGroup) error {
-	return a.store.UpdateGroup(g)
+	a.controlMu.Lock()
+	defer a.controlMu.Unlock()
+	if err := a.store.UpdateGroup(g); err != nil {
+		return err
+	}
+	if err := a.reconcileRuntime("group update", false); err != nil {
+		return err
+	}
+	return nil
 }
 
 // RenameGroup changes a group's display name.
 func (a *App) RenameGroup(id uint, name string) (*repo.PeerGroup, error) {
-	return a.store.RenameGroup(id, name)
+	a.controlMu.Lock()
+	defer a.controlMu.Unlock()
+	g, err := a.store.RenameGroup(id, name)
+	if err != nil {
+		return nil, err
+	}
+	if err := a.reconcileRuntime("group rename", false); err != nil {
+		return nil, err
+	}
+	return g, nil
 }
 
 // DeleteGroup removes a group and refreshes ACL rules.
 func (a *App) DeleteGroup(id uint) error {
+	a.controlMu.Lock()
+	defer a.controlMu.Unlock()
 	if err := a.store.DeleteGroup(id); err != nil {
 		return err
 	}
-	return a.SyncAccessFilter()
+	if err := a.reconcileRuntime("group deletion", false); err != nil {
+		return err
+	}
+	return nil
 }
 
 // GroupGraphData holds groups, links, and peers for the topology UI.
@@ -96,6 +127,8 @@ func (a *App) GroupGraph() (GroupGraphData, error) {
 
 // CreateGroupLink adds or replaces a directed group link.
 func (a *App) CreateGroupLink(fromID, toID uint, bidirectional bool) error {
+	a.controlMu.Lock()
+	defer a.controlMu.Unlock()
 	if _, err := a.store.GetGroup(fromID); err != nil {
 		return err
 	}
@@ -108,15 +141,23 @@ func (a *App) CreateGroupLink(fromID, toID uint, bidirectional bool) error {
 	if err := a.store.UpsertGroupLink(fromID, toID, bidirectional); err != nil {
 		return err
 	}
-	return a.SyncAccessFilter()
+	if err := a.reconcileRuntime("group-link creation", false); err != nil {
+		return err
+	}
+	return nil
 }
 
 // DeleteGroupLink removes a directed group link.
 func (a *App) DeleteGroupLink(fromID, toID uint) error {
+	a.controlMu.Lock()
+	defer a.controlMu.Unlock()
 	if err := a.store.DeleteGroupLink(fromID, toID); err != nil {
 		return err
 	}
-	return a.SyncAccessFilter()
+	if err := a.reconcileRuntime("group-link deletion", false); err != nil {
+		return err
+	}
+	return nil
 }
 
 // UpdateGroupLayout saves canvas positions for groups.
@@ -142,6 +183,8 @@ type GroupLayoutItem struct {
 
 // UpdateGroupFields applies name, position, and intra-group policy changes.
 func (a *App) UpdateGroupFields(id uint, name *string, posX, posY *float64, allowIntra *bool) (*repo.PeerGroup, bool, error) {
+	a.controlMu.Lock()
+	defer a.controlMu.Unlock()
 	g, err := a.store.GetGroup(id)
 	if err != nil {
 		return nil, false, err
@@ -166,7 +209,7 @@ func (a *App) UpdateGroupFields(id uint, name *string, posX, posY *float64, allo
 		if err := a.store.UpdateGroup(g); err != nil {
 			return nil, false, err
 		}
-		if err := a.SyncAccessFilter(); err != nil {
+		if err := a.reconcileRuntime("group update", false); err != nil {
 			return g, true, err
 		}
 	}

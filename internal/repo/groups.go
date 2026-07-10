@@ -9,20 +9,30 @@ import (
 )
 
 func (s *Store) ListGroups() ([]PeerGroup, error) {
+	s.lease.RLock()
+	defer s.lease.RUnlock()
 	var groups []PeerGroup
 	err := s.db.Order("name asc").Find(&groups).Error
 	return groups, err
 }
 
 func (s *Store) GetGroup(id uint) (*PeerGroup, error) {
+	s.lease.RLock()
+	defer s.lease.RUnlock()
+	return getGroupDB(s.db, id)
+}
+
+func getGroupDB(db *gorm.DB, id uint) (*PeerGroup, error) {
 	var g PeerGroup
-	if err := s.db.First(&g, id).Error; err != nil {
+	if err := db.First(&g, id).Error; err != nil {
 		return nil, err
 	}
 	return &g, nil
 }
 
 func (s *Store) CreateGroup(name string, posX, posY float64) (*PeerGroup, error) {
+	s.lease.RLock()
+	defer s.lease.RUnlock()
 	name = strings.TrimSpace(name)
 	if name == "" {
 		return nil, fmt.Errorf("group name is required")
@@ -35,15 +45,19 @@ func (s *Store) CreateGroup(name string, posX, posY float64) (*PeerGroup, error)
 }
 
 func (s *Store) UpdateGroup(g *PeerGroup) error {
+	s.lease.RLock()
+	defer s.lease.RUnlock()
 	return s.db.Save(g).Error
 }
 
 func (s *Store) RenameGroup(id uint, name string) (*PeerGroup, error) {
+	s.lease.RLock()
+	defer s.lease.RUnlock()
 	name = strings.TrimSpace(name)
 	if name == "" {
 		return nil, fmt.Errorf("group name is required")
 	}
-	g, err := s.GetGroup(id)
+	g, err := getGroupDB(s.db, id)
 	if err != nil {
 		return nil, err
 	}
@@ -65,6 +79,8 @@ func (s *Store) RenameGroup(id uint, name string) (*PeerGroup, error) {
 }
 
 func (s *Store) DeleteGroup(id uint) error {
+	s.lease.RLock()
+	defer s.lease.RUnlock()
 	var count int64
 	if err := s.db.Model(&Peer{}).Where("group_id = ?", id).Count(&count).Error; err != nil {
 		return err
@@ -84,6 +100,8 @@ func (s *Store) DeleteGroup(id uint) error {
 }
 
 func (s *Store) ListGroupLinks() ([]GroupLink, error) {
+	s.lease.RLock()
+	defer s.lease.RUnlock()
 	var links []GroupLink
 	err := s.db.Find(&links).Error
 	return links, err
@@ -104,6 +122,8 @@ func (s *Store) deleteLinksBetween(tx *gorm.DB, a, b uint) error {
 }
 
 func (s *Store) UpsertGroupLink(fromID, toID uint, bidirectional bool) error {
+	s.lease.RLock()
+	defer s.lease.RUnlock()
 	if fromID == toID {
 		return fmt.Errorf("cannot link a group to itself")
 	}
@@ -123,6 +143,8 @@ func (s *Store) UpsertGroupLink(fromID, toID uint, bidirectional bool) error {
 
 // FindGroupLink returns the single link between two groups, if any.
 func (s *Store) FindGroupLink(a, b uint) (*GroupLink, error) {
+	s.lease.RLock()
+	defer s.lease.RUnlock()
 	var link GroupLink
 	err := s.db.Where(
 		"(from_group_id = ? AND to_group_id = ?) OR (from_group_id = ? AND to_group_id = ?)",
@@ -138,6 +160,8 @@ func (s *Store) FindGroupLink(a, b uint) (*GroupLink, error) {
 }
 
 func (s *Store) HasGroupLink(fromID, toID uint) (bool, error) {
+	s.lease.RLock()
+	defer s.lease.RUnlock()
 	var count int64
 	err := s.db.Model(&GroupLink{}).Where(
 		"(from_group_id = ? AND to_group_id = ?) OR (from_group_id = ? AND to_group_id = ?)",
@@ -150,6 +174,8 @@ func (s *Store) HasGroupLink(fromID, toID uint) (bool, error) {
 }
 
 func (s *Store) DeleteGroupLink(fromID, toID uint) error {
+	s.lease.RLock()
+	defer s.lease.RUnlock()
 	return s.db.Where(
 		"(from_group_id = ? AND to_group_id = ?) OR (from_group_id = ? AND to_group_id = ?)",
 		fromID, toID, toID, fromID,
@@ -157,6 +183,8 @@ func (s *Store) DeleteGroupLink(fromID, toID uint) error {
 }
 
 func (s *Store) CountPeersByGroup() (map[uint]int64, error) {
+	s.lease.RLock()
+	defer s.lease.RUnlock()
 	type row struct {
 		GroupID uint
 		Count   int64
@@ -173,23 +201,33 @@ func (s *Store) CountPeersByGroup() (map[uint]int64, error) {
 }
 
 func (s *Store) MigrateGroups() error {
-	if err := s.db.AutoMigrate(&PeerGroup{}, &GroupLink{}); err != nil {
+	s.lease.RLock()
+	defer s.lease.RUnlock()
+	return migrateGroupsDB(s.db)
+}
+
+func migrateGroupsDB(db *gorm.DB) error {
+	if err := db.AutoMigrate(&PeerGroup{}, &GroupLink{}); err != nil {
 		return err
 	}
-	if s.db.Migrator().HasColumn(&PeerGroup{}, "passive") {
-		_ = s.db.Migrator().DropColumn(&PeerGroup{}, "passive")
+	if db.Migrator().HasColumn(&PeerGroup{}, "passive") {
+		if err := db.Migrator().DropColumn(&PeerGroup{}, "passive"); err != nil {
+			return err
+		}
 	}
-	if s.db.Migrator().HasTable("port_forward_dmzs") {
-		_ = s.db.Migrator().DropTable("port_forward_dmzs")
+	if db.Migrator().HasTable("port_forward_dmzs") {
+		if err := db.Migrator().DropTable("port_forward_dmzs"); err != nil {
+			return err
+		}
 	}
-	if !s.db.Migrator().HasColumn(&Peer{}, "group_id") {
-		if err := s.db.Migrator().AddColumn(&Peer{}, "GroupID"); err != nil {
+	if !db.Migrator().HasColumn(&Peer{}, "group_id") {
+		if err := db.Migrator().AddColumn(&Peer{}, "GroupID"); err != nil {
 			return err
 		}
 	}
 
 	var unassigned int64
-	if err := s.db.Model(&Peer{}).Where("group_id IS NULL OR group_id = 0").Count(&unassigned).Error; err != nil {
+	if err := db.Model(&Peer{}).Where("group_id IS NULL OR group_id = 0").Count(&unassigned).Error; err != nil {
 		return err
 	}
 	if unassigned == 0 {
@@ -197,13 +235,12 @@ func (s *Store) MigrateGroups() error {
 	}
 
 	var defaultGroup PeerGroup
-	err := s.db.Where("name = ?", "default").First(&defaultGroup).Error
+	err := db.Where("name = ?", "default").First(&defaultGroup).Error
 	if err != nil {
-		g, createErr := s.CreateGroup("default", 0, 0)
-		if createErr != nil {
+		defaultGroup = PeerGroup{Name: "default", PosX: 0, PosY: 0}
+		if createErr := db.Create(&defaultGroup).Error; createErr != nil {
 			return createErr
 		}
-		defaultGroup = *g
 	}
-	return s.db.Model(&Peer{}).Where("group_id IS NULL OR group_id = 0").Update("group_id", defaultGroup.ID).Error
+	return db.Model(&Peer{}).Where("group_id IS NULL OR group_id = 0").Update("group_id", defaultGroup.ID).Error
 }

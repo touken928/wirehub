@@ -11,6 +11,12 @@ import (
 
 // CreatePeer provisions a peer in the database and on the live network stack when running.
 func (a *App) CreatePeer(name string, groupID uint) (*repo.Peer, error) {
+	a.controlMu.Lock()
+	defer a.controlMu.Unlock()
+	return a.createPeer(name, groupID)
+}
+
+func (a *App) createPeer(name string, groupID uint) (*repo.Peer, error) {
 	slug, err := domainpeer.ValidateHostname(name)
 	if err != nil {
 		return nil, err
@@ -37,40 +43,22 @@ func (a *App) CreatePeer(name string, groupID uint) (*repo.Peer, error) {
 		return nil, err
 	}
 
-	ip, err := a.store.AllocateIP(settings.WGSubnet, settings.HubIP, settings.DNSIP)
-	if err != nil {
-		return nil, err
-	}
-
 	peer := &repo.Peer{
 		Name:       slug,
 		PublicKey:  pub,
 		PrivateKey: priv,
-		WGIP:       ip,
 		GroupID:    groupID,
 		Enabled:    true,
 		DNSName:    slug,
 	}
 
-	if err := a.store.CreatePeer(peer); err != nil {
+	if err := a.store.CreatePeerWithAllocatedIP(peer, settings.WGSubnet, settings.HubIP, settings.DNSIP); err != nil {
+		if errors.Is(err, repo.ErrIPAllocationUnavailable) {
+			return nil, ErrPeerIPUnavailable
+		}
 		return nil, err
 	}
-
-	if err := a.ensurePeerDNSRecord(peer); err != nil {
-		return nil, err
-	}
-	_ = a.store.UpdatePeer(peer)
-
-	dp := a.Hub.dataplane()
-	if dp != nil {
-		if err := dp.SyncPeer(repoPeerToWG(peer)); err != nil {
-			return nil, err
-		}
-		if err := a.syncDNSCatalog(); err != nil {
-			return nil, err
-		}
-	}
-	if err := a.SyncAccessFilter(); err != nil {
+	if err := a.reconcileRuntime("peer creation", false); err != nil {
 		return nil, err
 	}
 	return peer, nil
@@ -78,13 +66,20 @@ func (a *App) CreatePeer(name string, groupID uint) (*repo.Peer, error) {
 
 // sentinel errors for peer operations
 var (
-	ErrPeerNotFound   = errors.New("peer not found")
-	ErrGroupNotFound  = errors.New("group not found")
-	ErrHostnameExists = errors.New("hostname already exists")
+	ErrPeerNotFound      = errors.New("peer not found")
+	ErrGroupNotFound     = errors.New("group not found")
+	ErrHostnameExists    = errors.New("hostname already exists")
+	ErrPeerIPUnavailable = errors.New("no peer IP available in subnet")
 )
 
 // UpdatePeerFields atomically renames and/or moves a peer. Nil fields are left unchanged.
 func (a *App) UpdatePeerFields(id uint, name *string, groupID *uint) (*repo.Peer, error) {
+	a.controlMu.Lock()
+	defer a.controlMu.Unlock()
+	return a.updatePeerFields(id, name, groupID)
+}
+
+func (a *App) updatePeerFields(id uint, name *string, groupID *uint) (*repo.Peer, error) {
 	peer, err := a.store.GetPeer(id)
 	if err != nil {
 		return nil, ErrPeerNotFound
@@ -127,18 +122,7 @@ func (a *App) UpdatePeerFields(id uint, name *string, groupID *uint) (*repo.Peer
 			return nil, err
 		}
 	}
-	dp := a.Hub.dataplane()
-	if dp != nil {
-		if err := dp.SyncPeer(repoPeerToWG(peer)); err != nil {
-			return nil, err
-		}
-		if name != nil {
-			if err := a.syncDNSCatalog(); err != nil {
-				return nil, err
-			}
-		}
-	}
-	if err := a.SyncAccessFilter(); err != nil {
+	if err := a.reconcileRuntime("peer update", false); err != nil {
 		return nil, err
 	}
 	return peer, nil
@@ -146,25 +130,32 @@ func (a *App) UpdatePeerFields(id uint, name *string, groupID *uint) (*repo.Peer
 
 // DeletePeer removes a peer from the database and live network.
 func (a *App) DeletePeer(peerID uint) error {
-	peer, err := a.store.GetPeer(peerID)
+	a.controlMu.Lock()
+	defer a.controlMu.Unlock()
+	_, err := a.store.GetPeer(peerID)
 	if err != nil {
 		return ErrPeerNotFound
 	}
-	if dp := a.Hub.dataplane(); dp != nil {
-		_ = dp.RemovePeer(peer.PublicKey)
+	if err := a.store.DeleteDNSByPeerID(peerID); err != nil {
+		return err
 	}
-	_ = a.store.DeleteDNSByPeerID(peerID)
 	if err := a.store.DeletePeer(peerID); err != nil {
 		return err
 	}
-	if err := a.syncDNSCatalog(); err != nil {
+	if err := a.reconcileRuntime("peer deletion", false); err != nil {
 		return err
 	}
-	return a.SyncAccessFilter()
+	return nil
 }
 
 // TogglePeer enables or disables a peer on the live network.
 func (a *App) TogglePeer(peerID uint) (*repo.Peer, error) {
+	a.controlMu.Lock()
+	defer a.controlMu.Unlock()
+	return a.togglePeer(peerID)
+}
+
+func (a *App) togglePeer(peerID uint) (*repo.Peer, error) {
 	peer, err := a.store.GetPeer(peerID)
 	if err != nil {
 		return nil, ErrPeerNotFound
@@ -173,20 +164,7 @@ func (a *App) TogglePeer(peerID uint) (*repo.Peer, error) {
 	if err := a.store.UpdatePeer(peer); err != nil {
 		return nil, err
 	}
-	dp := a.Hub.dataplane()
-	if dp != nil {
-		if peer.Enabled {
-			if err := dp.SyncPeer(repoPeerToWG(peer)); err != nil {
-				return nil, err
-			}
-		} else {
-			_ = dp.RemovePeer(peer.PublicKey)
-		}
-		if err := a.syncDNSCatalog(); err != nil {
-			return nil, err
-		}
-	}
-	if err := a.SyncAccessFilter(); err != nil {
+	if err := a.reconcileRuntime("peer toggle", false); err != nil {
 		return nil, err
 	}
 	return peer, nil

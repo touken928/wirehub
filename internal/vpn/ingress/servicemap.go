@@ -38,6 +38,7 @@ type udpMapSession struct {
 	client     *gonet.UDPConn
 	backend    net.Conn
 	lastActive time.Time
+	generation uint64
 }
 
 // MapProxy terminates TCP/UDP to map virtual IPs and dials map targets.
@@ -51,10 +52,13 @@ type MapProxy struct {
 	rules       map[netip.Addr]*MapRule
 	slugByIP    map[netip.Addr]string
 	cancel      context.CancelFunc
+	ctx         context.Context
+	generation  uint64
 	tcpFwd      *tcp.Forwarder
 	udpFwd      *udp.Forwarder
 	udpMu       sync.Mutex
 	udpSessions map[flowKey]*udpMapSession
+	udpPending  map[flowKey]uint64
 }
 
 func NewMapProxy(tnet *wgnetstack.Net, vpnSubnet string, resolver HostResolver) (*MapProxy, error) {
@@ -70,6 +74,7 @@ func NewMapProxy(tnet *wgnetstack.Net, vpnSubnet string, resolver HostResolver) 
 		slugByIP:    make(map[netip.Addr]string),
 		peerGroup:   make(map[netip.Addr]uint),
 		udpSessions: make(map[flowKey]*udpMapSession),
+		udpPending:  make(map[flowKey]uint64),
 	}, nil
 }
 
@@ -105,48 +110,62 @@ func (m *MapProxy) peerAllowed(rule *MapRule, peerIP netip.Addr) bool {
 }
 
 func (m *MapProxy) Apply(rules []MapRule, peers []runtime.WGPeer) error {
-	m.SetPeerGroups(peers)
-	m.mu.Lock()
-	defer m.mu.Unlock()
-
-	if m.cancel != nil {
-		m.cancel()
-		m.cancel = nil
-	}
-	m.closeUDPSessions()
-	m.rules = make(map[netip.Addr]*MapRule, len(rules))
-	m.slugByIP = make(map[netip.Addr]string, len(rules))
-
 	stk, err := vpnnetstack.StackFromNet(m.tnet)
 	if err != nil {
 		return err
 	}
+	newRules := make(map[netip.Addr]*MapRule, len(rules))
+	newSlugs := make(map[netip.Addr]string, len(rules))
 
 	for i := range rules {
 		rule := rules[i]
 		if err := ensureMapAddress(stk, rule.VirtualIP); err != nil {
-			log.Printf("map %s: add address %s: %v", rule.Slug, rule.VirtualIP, err)
-			continue
+			return fmt.Errorf("map %s: add address %s: %w", rule.Slug, rule.VirtualIP, err)
 		}
-		m.rules[rule.VirtualIP] = &rules[i]
-		m.slugByIP[rule.VirtualIP] = rule.Slug
+		newRules[rule.VirtualIP] = &rules[i]
+		newSlugs[rule.VirtualIP] = rule.Slug
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
-	m.cancel = cancel
+	pg := make(map[netip.Addr]uint, len(peers))
+	for _, p := range peers {
+		if !p.Enabled || p.GroupID == 0 {
+			continue
+		}
+		ip, parseErr := netip.ParseAddr(p.WGIP)
+		if parseErr == nil {
+			pg[ip] = p.GroupID
+		}
+	}
 
+	m.mu.Lock()
+	oldCancel := m.cancel
+	m.generation++
+	m.cancel = cancel
+	m.ctx = ctx
+	m.closeUDPSessions()
+	m.rules = newRules
+	m.slugByIP = newSlugs
+	m.peerGroup = pg
+	m.mu.Unlock()
+	if oldCancel != nil {
+		oldCancel()
+	}
+
+	m.mu.Lock()
 	if m.tcpFwd == nil {
 		m.tcpFwd = tcp.NewForwarder(stk, 0, 512, func(req *tcp.ForwarderRequest) {
-			m.handleTCPForwarderRequest(ctx, req)
+			m.handleTCPForwarderRequest(m.currentContext(), req)
 		})
 		stk.SetTransportProtocolHandler(tcp.ProtocolNumber, m.tcpFwd.HandlePacket)
 	}
 	if m.udpFwd == nil {
 		m.udpFwd = udp.NewForwarder(stk, func(req *udp.ForwarderRequest) {
-			m.handleUDPForwarderRequest(ctx, req)
+			m.handleUDPForwarderRequest(m.currentContext(), req)
 		})
 		stk.SetTransportProtocolHandler(udp.ProtocolNumber, m.udpFwd.HandlePacket)
 	}
+	m.mu.Unlock()
 
 	return nil
 }
@@ -158,9 +177,20 @@ func (m *MapProxy) Stop() {
 		m.cancel()
 		m.cancel = nil
 	}
+	m.ctx = nil
+	m.generation++
 	m.closeUDPSessions()
 	m.rules = make(map[netip.Addr]*MapRule)
 	m.slugByIP = make(map[netip.Addr]string)
+}
+
+func (m *MapProxy) currentContext() context.Context {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.ctx == nil {
+		return context.Background()
+	}
+	return m.ctx
 }
 
 func (m *MapProxy) closeUDPSessions() {
@@ -171,6 +201,7 @@ func (m *MapProxy) closeUDPSessions() {
 		_ = sess.client.Close()
 	}
 	m.udpSessions = make(map[flowKey]*udpMapSession)
+	m.udpPending = make(map[flowKey]uint64)
 }
 
 // EnsureStackMapAddresses adds map virtual IPs to the hub gVisor stack (idempotent).
@@ -245,6 +276,7 @@ func (m *MapProxy) handleUDPForwarderRequest(ctx context.Context, req *udp.Forwa
 
 	m.mu.Lock()
 	rule := m.rules[localIP]
+	generation := m.generation
 	m.mu.Unlock()
 	if rule == nil {
 		return
@@ -266,29 +298,47 @@ func (m *MapProxy) handleUDPForwarderRequest(ctx context.Context, req *udp.Forwa
 		proto:      protoUDP,
 	}
 
+	// Keep the map lifecycle lock while reserving the flow so Apply cannot
+	// advance the generation between this check and pending publication.
+	m.mu.Lock()
+	if m.generation != generation || m.rules[localIP] != rule {
+		m.mu.Unlock()
+		return
+	}
 	m.udpMu.Lock()
+	m.mu.Unlock()
 	if _, exists := m.udpSessions[key]; exists {
 		m.udpMu.Unlock()
 		return
 	}
+	if _, pending := m.udpPending[key]; pending {
+		m.udpMu.Unlock()
+		return
+	}
+	m.udpPending[key] = generation
 	m.udpMu.Unlock()
 
 	var wq waiter.Queue
 	ep, udpErr := req.CreateEndpoint(&wq)
 	if udpErr != nil {
+		m.deleteUDPPending(key, generation)
 		return
 	}
 	client := gonet.NewUDPConn(&wq, ep)
+	go m.createMapUDPSession(ctx, generation, key, id.LocalPort, rule, client)
+}
 
+func (m *MapProxy) createMapUDPSession(ctx context.Context, generation uint64, key flowKey, localPort uint16, rule *MapRule, client *gonet.UDPConn) {
 	addrs, err := m.resolver.ResolveForwardAddrs(rule.TargetHost)
 	if err != nil {
 		log.Printf("map %s resolve %q: %v", rule.Slug, rule.TargetHost, err)
 		_ = client.Close()
+		m.deleteUDPPending(key, generation)
 		return
 	}
 	var backend net.Conn
 	for _, addr := range addrs {
-		target := netip.AddrPortFrom(addr, id.LocalPort)
+		target := netip.AddrPortFrom(addr, localPort)
 		backend, err = m.dialTarget(ctx, "udp", target)
 		if err == nil {
 			break
@@ -297,15 +347,24 @@ func (m *MapProxy) handleUDPForwarderRequest(ctx context.Context, req *udp.Forwa
 	}
 	if backend == nil {
 		_ = client.Close()
+		m.deleteUDPPending(key, generation)
 		return
 	}
-
-	sess := &udpMapSession{
-		client:     client,
-		backend:    backend,
-		lastActive: time.Now(),
-	}
+	sess := &udpMapSession{client: client, backend: backend, lastActive: time.Now(), generation: generation}
 	m.udpMu.Lock()
+	if m.udpPending[key] != generation {
+		m.udpMu.Unlock()
+		_ = backend.Close()
+		_ = client.Close()
+		return
+	}
+	delete(m.udpPending, key)
+	if ctx.Err() != nil {
+		m.udpMu.Unlock()
+		_ = backend.Close()
+		_ = client.Close()
+		return
+	}
 	if _, exists := m.udpSessions[key]; exists {
 		m.udpMu.Unlock()
 		_ = backend.Close()
@@ -314,9 +373,16 @@ func (m *MapProxy) handleUDPForwarderRequest(ctx context.Context, req *udp.Forwa
 	}
 	m.udpSessions[key] = sess
 	m.udpMu.Unlock()
-
 	go m.mapUDPClientToBackend(ctx, rule, sess)
 	go m.mapUDPBackendToClient(ctx, key, sess)
+}
+
+func (m *MapProxy) deleteUDPPending(key flowKey, generation uint64) {
+	m.udpMu.Lock()
+	if m.udpPending[key] == generation {
+		delete(m.udpPending, key)
+	}
+	m.udpMu.Unlock()
 }
 
 func (m *MapProxy) mapUDPClientToBackend(ctx context.Context, rule *MapRule, sess *udpMapSession) {
@@ -344,9 +410,7 @@ func (m *MapProxy) mapUDPBackendToClient(ctx context.Context, key flowKey, sess 
 	defer func() {
 		_ = sess.backend.Close()
 		_ = sess.client.Close()
-		m.udpMu.Lock()
-		delete(m.udpSessions, key)
-		m.udpMu.Unlock()
+		m.deleteUDPSession(key, sess)
 	}()
 	buf := make([]byte, 64*1024)
 	for {
@@ -365,6 +429,14 @@ func (m *MapProxy) mapUDPBackendToClient(ctx context.Context, key flowKey, sess 
 		sess.lastActive = time.Now()
 		m.udpMu.Unlock()
 	}
+}
+
+func (m *MapProxy) deleteUDPSession(key flowKey, sess *udpMapSession) {
+	m.udpMu.Lock()
+	if current := m.udpSessions[key]; current == sess && current.generation == sess.generation {
+		delete(m.udpSessions, key)
+	}
+	m.udpMu.Unlock()
 }
 
 func (m *MapProxy) proxyTCP(ctx context.Context, rule *MapRule, client *gonet.TCPConn, localPort uint16) {

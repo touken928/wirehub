@@ -2,19 +2,22 @@ package repo
 
 import (
 	"database/sql"
+	"errors"
 	"fmt"
 	"io"
 	"os"
 	"path/filepath"
 	"strings"
 
-
+	gormsqlite "github.com/glebarez/sqlite"
+	"gorm.io/gorm"
 )
 
 const sqliteHeader = "SQLite format 3\x00"
 
 var wireHubTables = []string{
 	"admins", "settings", "peer_groups", "group_links", "peers", "dns_records",
+	"port_forwards", "service_relays", "relay_group_allows",
 }
 
 // ValidateWireHubDatabase checks that path is a configured WireHub SQLite database.
@@ -49,6 +52,10 @@ func ValidateWireHubDatabase(path string) error {
 		return fmt.Errorf("open database: %w", err)
 	}
 	defer db.Close()
+	var quick string
+	if err := db.QueryRow(`PRAGMA quick_check`).Scan(&quick); err != nil || quick != "ok" {
+		return fmt.Errorf("SQLite quick_check failed: %s", quick)
+	}
 
 	for _, table := range wireHubTables {
 		var name string
@@ -83,32 +90,40 @@ func ValidateWireHubDatabase(path string) error {
 }
 
 func (s *Store) DatabasePath() string {
+	s.lease.RLock()
+	defer s.lease.RUnlock()
 	return s.dbPath
 }
 
 func (s *Store) closeDB() error {
-	if s.db == nil {
-		return nil
-	}
-	sqlDB, err := s.db.DB()
-	if err != nil {
-		return err
-	}
-	if err := sqlDB.Close(); err != nil {
-		return err
-	}
-	s.db = nil
-	return nil
+	return closeGormDB(s.db)
 }
 
 // ExportDatabase writes a consistent snapshot of wirehub.db.
 func (s *Store) ExportDatabase(w io.Writer) error {
-	if err := s.db.Exec("PRAGMA wal_checkpoint(FULL)").Error; err != nil {
-		return fmt.Errorf("checkpoint: %w", err)
+	s.lease.RLock()
+	defer s.lease.RUnlock()
+	if hook := s.testErrorHook(func(s *Store) func() error { return s.exportHook }); hook != nil {
+		if err := hook(); err != nil {
+			return err
+		}
 	}
-	f, err := os.Open(s.dbPath)
+	tmp, err := os.CreateTemp(filepath.Dir(s.dbPath), ".wirehub-export-*.db")
 	if err != nil {
-		return fmt.Errorf("open database file: %w", err)
+		return fmt.Errorf("create snapshot: %w", err)
+	}
+	tmpPath := tmp.Name()
+	_ = tmp.Close()
+	defer os.Remove(tmpPath)
+	if hook := s.testHook(func(s *Store) func() { return s.snapshotHook }); hook != nil {
+		hook()
+	}
+	if err := s.db.Exec("VACUUM INTO ?", tmpPath).Error; err != nil {
+		return fmt.Errorf("create SQLite snapshot: %w", err)
+	}
+	f, err := os.Open(tmpPath)
+	if err != nil {
+		return fmt.Errorf("open snapshot: %w", err)
 	}
 	defer f.Close()
 	if _, err := io.Copy(w, f); err != nil {
@@ -119,54 +134,190 @@ func (s *Store) ExportDatabase(w io.Writer) error {
 
 // ImportDatabase replaces the live database with a validated backup file.
 func (s *Store) ImportDatabase(srcPath string) error {
-	if err := ValidateWireHubDatabase(srcPath); err != nil {
-		return err
-	}
-	if err := s.closeDB(); err != nil {
-		return err
-	}
-	if err := copyFileAtomic(srcPath, s.dbPath); err != nil {
-		_ = s.openDB()
-		return err
-	}
-	if err := s.openDB(); err != nil {
-		return err
-	}
-	configured, err := s.IsConfigured()
+	stagedPath, cleanup, err := prepareImportDatabase(srcPath, s.dbPath)
 	if err != nil {
 		return err
 	}
-	if !configured {
-		return fmt.Errorf("imported database is not a configured WireHub hub")
+	defer cleanup()
+	s.lease.Lock()
+	defer s.lease.Unlock()
+	return s.swapDatabaseLocked(stagedPath)
+}
+
+func prepareImportDatabase(srcPath, livePath string) (string, func(), error) {
+	dir := filepath.Dir(livePath)
+	sourceCopy, err := os.CreateTemp(dir, ".wirehub-import-source-*.db")
+	if err != nil {
+		return "", func() {}, err
+	}
+	sourcePath := sourceCopy.Name()
+	cleanup := func() {
+		_ = os.Remove(sourcePath)
+		_ = os.Remove(sourcePath + "-wal")
+		_ = os.Remove(sourcePath + "-shm")
+	}
+	if err := copyFile(srcPath, sourcePath); err != nil {
+		cleanup()
+		_ = sourceCopy.Close()
+		return "", func() {}, err
+	}
+	if err := sourceCopy.Close(); err != nil {
+		cleanup()
+		return "", func() {}, err
+	}
+	for _, suffix := range []string{"-wal", "-shm"} {
+		if err := copyOptionalFile(srcPath+suffix, sourcePath+suffix); err != nil {
+			cleanup()
+			return "", func() {}, err
+		}
+	}
+	finalFile, err := os.CreateTemp(dir, ".wirehub-import-final-*.db")
+	if err != nil {
+		cleanup()
+		return "", func() {}, err
+	}
+	finalPath := finalFile.Name()
+	_ = finalFile.Close()
+	_ = os.Remove(finalPath)
+	cleanupAll := func() {
+		cleanup()
+		_ = os.Remove(finalPath)
+		_ = os.Remove(finalPath + "-wal")
+		_ = os.Remove(finalPath + "-shm")
+	}
+
+	db, err := gorm.Open(gormsqlite.Open(sourcePath), &gorm.Config{})
+	if err != nil {
+		cleanupAll()
+		return "", func() {}, fmt.Errorf("open database: %w", err)
+	}
+	if err := migrateDB(db); err != nil {
+		_ = closeGormDB(db)
+		cleanupAll()
+		return "", func() {}, fmt.Errorf("migrate database: %w", err)
+	}
+	if err := migrateGroupsDB(db); err != nil {
+		_ = closeGormDB(db)
+		cleanupAll()
+		return "", func() {}, fmt.Errorf("migrate groups: %w", err)
+	}
+	if err := db.Exec("VACUUM INTO ?", finalPath).Error; err != nil {
+		_ = closeGormDB(db)
+		cleanupAll()
+		return "", func() {}, fmt.Errorf("snapshot import: %w", err)
+	}
+	if err := closeGormDB(db); err != nil {
+		cleanupAll()
+		return "", func() {}, err
+	}
+	if err := ValidateWireHubDatabase(finalPath); err != nil {
+		cleanupAll()
+		return "", func() {}, err
+	}
+	return finalPath, cleanupAll, nil
+}
+
+func (s *Store) swapDatabaseLocked(stagedPath string) error {
+	backupBase := s.dbPath + ".import-backup"
+	if err := removeDatabaseFiles(backupBase); err != nil {
+		return fmt.Errorf("clear import backup: %w", err)
+	}
+	if err := s.closeDB(); err != nil {
+		reopenErr := s.openDB()
+		return errors.Join(fmt.Errorf("close live database: %w", err), reopenErr)
+	}
+	moved := false
+	for _, suffix := range databaseSidecars {
+		if err := moveOptional(s.dbPath+suffix, backupBase+suffix); err != nil {
+			return errors.Join(fmt.Errorf("backup live database: %w", err), s.restoreDatabaseLocked(backupBase, moved))
+		}
+		if suffix == "" {
+			moved = true
+		}
+	}
+	if err := os.Rename(stagedPath, s.dbPath); err != nil {
+		return errors.Join(fmt.Errorf("install imported database: %w", err), s.restoreDatabaseLocked(backupBase, moved))
+	}
+	if err := s.openDB(); err != nil {
+		return errors.Join(fmt.Errorf("open imported database: %w", err), s.restoreDatabaseLocked(backupBase, true))
+	}
+	configured, err := isConfiguredDB(s.db)
+	if err != nil || !configured {
+		if err == nil {
+			err = fmt.Errorf("imported database is not a configured WireHub hub")
+		}
+		return errors.Join(err, s.restoreDatabaseLocked(backupBase, true))
+	}
+	if err := removeDatabaseFiles(backupBase); err != nil {
+		return fmt.Errorf("remove import backup: %w", err)
 	}
 	return nil
 }
 
-func copyFileAtomic(src, dst string) error {
-	data, err := os.ReadFile(src)
+var databaseSidecars = []string{"", "-wal", "-shm"}
+
+func (s *Store) restoreDatabaseLocked(backupBase string, moved bool) error {
+	var errs []error
+	if s.db != nil {
+		if err := closeGormDB(s.db); err != nil {
+			errs = append(errs, err)
+		}
+	}
+	if moved {
+		if err := removeDatabaseFiles(s.dbPath); err != nil {
+			errs = append(errs, err)
+		}
+		for _, suffix := range databaseSidecars {
+			if err := moveOptional(backupBase+suffix, s.dbPath+suffix); err != nil {
+				errs = append(errs, err)
+			}
+		}
+	}
+	if err := s.openDB(); err != nil {
+		errs = append(errs, fmt.Errorf("reopen restored database: %w", err))
+	}
+	return errors.Join(errs...)
+}
+
+func moveOptional(src, dst string) error {
+	if _, err := os.Stat(src); errors.Is(err, os.ErrNotExist) {
+		return nil
+	} else if err != nil {
+		return err
+	}
+	_ = os.Remove(dst)
+	return os.Rename(src, dst)
+}
+
+func removeDatabaseFiles(base string) error {
+	var errs []error
+	for _, suffix := range databaseSidecars {
+		if err := os.Remove(base + suffix); err != nil && !errors.Is(err, os.ErrNotExist) {
+			errs = append(errs, err)
+		}
+	}
+	return errors.Join(errs...)
+}
+
+func copyFile(src, dst string) error {
+	in, err := os.Open(src)
 	if err != nil {
 		return err
 	}
-	dir := filepath.Dir(dst)
-	tmp, err := os.CreateTemp(dir, "wirehub-import-*.db")
+	defer in.Close()
+	out, err := os.OpenFile(dst, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o600)
 	if err != nil {
 		return err
 	}
-	tmpPath := tmp.Name()
-	if _, err := tmp.Write(data); err != nil {
-		_ = tmp.Close()
-		_ = os.Remove(tmpPath)
-		return err
+	_, copyErr := io.Copy(out, in)
+	syncErr := out.Sync()
+	closeErr := out.Close()
+	return errors.Join(copyErr, syncErr, closeErr)
+}
+
+func copyOptionalFile(src, dst string) error {
+	if _, err := os.Stat(src); errors.Is(err, os.ErrNotExist) {
+		return nil
 	}
-	if err := tmp.Close(); err != nil {
-		_ = os.Remove(tmpPath)
-		return err
-	}
-	if err := os.Rename(tmpPath, dst); err != nil {
-		_ = os.Remove(tmpPath)
-		return err
-	}
-	_ = os.Remove(dst + "-wal")
-	_ = os.Remove(dst + "-shm")
-	return nil
+	return copyFile(src, dst)
 }

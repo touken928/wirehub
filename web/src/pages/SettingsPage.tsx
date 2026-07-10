@@ -143,6 +143,7 @@ export default function SettingsPage() {
     setSaving(true);
     setError('');
     setMessage('');
+    let passwordChanged = false;
     try {
       if (newPassword || confirmPassword || currentPassword) {
         if (newPassword !== confirmPassword) {
@@ -152,6 +153,7 @@ export default function SettingsPage() {
           throw new Error('Current password is required to set a new password');
         }
         await api.changePassword(currentPassword, newPassword);
+        passwordChanged = true;
         setCurrentPassword('');
         setNewPassword('');
         setConfirmPassword('');
@@ -170,6 +172,9 @@ export default function SettingsPage() {
       );
     } catch (err) {
       setError(getErrorMessage(err, 'Save failed'));
+      if (passwordChanged) {
+        setMessage('Password changed, but the other settings could not be saved.');
+      }
     } finally {
       setSaving(false);
     }

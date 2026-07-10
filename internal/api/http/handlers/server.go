@@ -35,6 +35,7 @@ func (s *Server) setSetupToken(tok string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.setupToken = tok
+	s.App.SetSetupToken(tok)
 }
 
 // LoginLimiter returns the login rate limiter.
@@ -45,18 +46,27 @@ func (s *Server) LoginLimiter() *httputil.LoginRateLimiter {
 // RegenerateSetupToken creates a new random setup token, stores it on the server,
 // and logs it with operator hints. Used after first-run startup and after a hub reset.
 func (s *Server) RegenerateSetupToken() string {
+	token := s.newSetupToken()
+	s.setSetupToken(token)
+	logSetupToken(s.SetupURLHost, token)
+	return token
+}
+
+func (s *Server) newSetupToken() string {
 	b := make([]byte, 32)
 	if _, err := rand.Read(b); err != nil {
 		log.Fatalf("setup token generation: %v", err)
 	}
 	token := hex.EncodeToString(b)
-	s.setSetupToken(token)
+	return token
+}
+
+func logSetupToken(host, token string) {
 	log.Println("══════════════════════════════════════════════════════")
 	log.Printf("  New setup token: %s", token)
-	log.Printf("  Open http://%s/setup?setup_token=%s", s.SetupURLHost, token)
+	log.Printf("  Open http://%s/setup?setup_token=%s", host, token)
 	log.Printf("  Keep the token in the setup URL until configuration completes")
 	log.Println("══════════════════════════════════════════════════════")
-	return token
 }
 
 // NewServer constructs handler dependencies and wires status WebSocket publishing.

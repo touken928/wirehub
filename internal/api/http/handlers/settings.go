@@ -3,6 +3,7 @@ package handlers
 import (
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -41,7 +42,11 @@ func UpdateSettings(s *Server, c *gin.Context) {
 	}
 	result, err := s.App.UpdateMutableSettings(req.MTU, req.StatusInterval, req.UpstreamDNS)
 	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		status := http.StatusBadRequest
+		if service.IsRuntimeFailure(err) {
+			status = http.StatusServiceUnavailable
+		}
+		c.JSON(status, gin.H{"error": err.Error()})
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{
@@ -74,10 +79,32 @@ func ChangePassword(s *Server, c *gin.Context) {
 }
 
 func ExportDatabase(s *Server, c *gin.Context) {
+	tmp, err := os.CreateTemp(filepath.Dir(s.App.DatabasePath()), ".wirehub-export-response-*.db")
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	tmpPath := tmp.Name()
+	defer os.Remove(tmpPath)
+	if err := s.App.ExportDatabase(tmp); err != nil {
+		_ = tmp.Close()
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	if err := tmp.Close(); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	file, err := os.Open(tmpPath)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+	defer file.Close()
 	c.Header("Content-Type", "application/octet-stream")
 	c.Header("Content-Disposition", `attachment; filename="wirehub.db"`)
 	c.Status(http.StatusOK)
-	if err := s.App.ExportDatabase(c.Writer); err != nil {
+	if _, err := io.Copy(c.Writer, file); err != nil {
 		_ = c.Error(err)
 	}
 }
@@ -86,17 +113,12 @@ func ImportDatabase(s *Server, c *gin.Context) {
 	if !requireSetupToken(s, c) {
 		return
 	}
-	configured, err := s.App.IsConfigured()
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-		return
-	}
-	if configured {
-		c.JSON(http.StatusConflict, gin.H{"error": "hub is already configured; reset before importing a database"})
-		return
-	}
 	file, err := c.FormFile("database")
 	if err != nil {
+		if configured, stateErr := s.App.IsConfigured(); stateErr == nil && configured {
+			c.JSON(http.StatusConflict, gin.H{"error": "hub is already configured; reset before importing a database"})
+			return
+		}
 		c.JSON(http.StatusBadRequest, gin.H{"error": "database file is required"})
 		return
 	}
@@ -127,7 +149,15 @@ func ImportDatabase(s *Server, c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
-	if err := s.App.ImportDatabase(tmpPath); err != nil {
+	if err := s.App.ImportDatabaseWithToken(tmpPath, c.Query("setup_token")); err != nil {
+		if errors.Is(err, service.ErrSetupTokenRequired) {
+			c.JSON(http.StatusForbidden, gin.H{"error": "setup token required; check server logs for the first-run setup token"})
+			return
+		}
+		if errors.Is(err, service.ErrImportWhenConfigured) {
+			c.JSON(http.StatusConflict, gin.H{"error": err.Error()})
+			return
+		}
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}

@@ -56,6 +56,12 @@ type UpdateSettingsResult struct {
 
 // UpdateMutableSettings persists MTU, status interval, and upstream DNS; refreshes runtime when needed.
 func (a *App) UpdateMutableSettings(mtu, statusInterval int, upstream []string) (UpdateSettingsResult, error) {
+	a.controlMu.Lock()
+	defer a.controlMu.Unlock()
+	return a.updateMutableSettings(mtu, statusInterval, upstream)
+}
+
+func (a *App) updateMutableSettings(mtu, statusInterval int, upstream []string) (UpdateSettingsResult, error) {
 	settings, err := a.store.GetSettings()
 	if err != nil {
 		return UpdateSettingsResult{}, err
@@ -68,17 +74,13 @@ func (a *App) UpdateMutableSettings(mtu, statusInterval int, upstream []string) 
 	if err != nil {
 		return UpdateSettingsResult{}, err
 	}
+	networkReload := settings.MTU != oldMTU
+	if err := a.reconcileRuntime("mutable settings update", networkReload); err != nil {
+		return UpdateSettingsResult{}, err
+	}
 	a.Hub.SetDNSUpstream(settings.UpstreamDNSResolvers())
 	a.Hub.StopStatusPoller()
 	a.Hub.StartStatusPoller(settings.StatusInterval)
-
-	networkReload := settings.MTU != oldMTU
-	net := a.Hub.NetworkRuntime()
-	if networkReload && net != nil {
-		if err := net.ReloadSettings(); err != nil {
-			return UpdateSettingsResult{}, err
-		}
-	}
 	return UpdateSettingsResult{RestartRequired: networkReload}, nil
 }
 

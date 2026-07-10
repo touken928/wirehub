@@ -8,6 +8,8 @@ import (
 
 var errSubnetIPUnavailable = errors.New("no available IP in subnet")
 
+var ErrIPAllocationUnavailable = errors.New("no available IP in subnet")
+
 func (s *Store) collectUsedSubnetIPs(hubIP, dnsIP string) (map[string]bool, error) {
 	used := map[string]bool{}
 	if hubIP != "" {

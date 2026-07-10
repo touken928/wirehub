@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/touken928/wirehub/internal/domain/forward"
+	"gorm.io/gorm"
 )
 
 var ErrPortForwardConflict = errors.New("listen port and protocol already in use")
@@ -19,25 +20,35 @@ type PortForwardInput struct {
 }
 
 func (s *Store) ListPortForwards() ([]PortForward, error) {
+	s.lease.RLock()
+	defer s.lease.RUnlock()
 	var rules []PortForward
 	err := s.db.Order("listen_port asc, protocol asc").Find(&rules).Error
 	return rules, err
 }
 
 func (s *Store) GetPortForward(id uint) (*PortForward, error) {
+	s.lease.RLock()
+	defer s.lease.RUnlock()
+	return getPortForwardDB(s.db, id)
+}
+
+func getPortForwardDB(db *gorm.DB, id uint) (*PortForward, error) {
 	var rule PortForward
-	if err := s.db.First(&rule, id).Error; err != nil {
+	if err := db.First(&rule, id).Error; err != nil {
 		return nil, err
 	}
 	return &rule, nil
 }
 
 func (s *Store) CreatePortForward(hubTunnelWebPort int, in PortForwardInput) (*PortForward, error) {
+	s.lease.RLock()
+	defer s.lease.RUnlock()
 	rule, err := normalizePortForward(in, hubTunnelWebPort)
 	if err != nil {
 		return nil, err
 	}
-	if taken, err := s.IsHubListenPortUsed(rule.ListenPort); err != nil {
+	if taken, err := s.isHubListenPortUsed(rule.ListenPort, 0); err != nil {
 		return nil, err
 	} else if taken {
 		return nil, fmt.Errorf("listen port %d is already in use", rule.ListenPort)
@@ -52,7 +63,9 @@ func (s *Store) CreatePortForward(hubTunnelWebPort int, in PortForwardInput) (*P
 }
 
 func (s *Store) UpdatePortForward(id uint, hubTunnelWebPort int, in PortForwardInput) (*PortForward, error) {
-	rule, err := s.GetPortForward(id)
+	s.lease.RLock()
+	defer s.lease.RUnlock()
+	rule, err := getPortForwardDB(s.db, id)
 	if err != nil {
 		return nil, err
 	}
@@ -78,6 +91,8 @@ func (s *Store) UpdatePortForward(id uint, hubTunnelWebPort int, in PortForwardI
 }
 
 func (s *Store) DeletePortForward(id uint) error {
+	s.lease.RLock()
+	defer s.lease.RUnlock()
 	return s.db.Delete(&PortForward{}, id).Error
 }
 

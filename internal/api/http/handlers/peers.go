@@ -42,7 +42,7 @@ func CreatePeer(s *Server, c *gin.Context) {
 	peer, err := s.App.CreatePeer(req.Name, req.GroupID)
 	if err != nil {
 		status := http.StatusInternalServerError
-		if errors.Is(err, service.ErrNetworkUnavailable) {
+		if service.IsRuntimeFailure(err) || errors.Is(err, service.ErrNetworkUnavailable) {
 			status = http.StatusServiceUnavailable
 		} else if errors.Is(err, service.ErrGroupNotFound) || errors.Is(err, service.ErrHostnameExists) {
 			status = http.StatusBadRequest
@@ -86,7 +86,9 @@ func DeletePeer(s *Server, c *gin.Context) {
 	}
 	if err := s.App.DeletePeer(id); err != nil {
 		status := http.StatusInternalServerError
-		if errors.Is(err, service.ErrPeerNotFound) {
+		if service.IsRuntimeFailure(err) {
+			status = http.StatusServiceUnavailable
+		} else if errors.Is(err, service.ErrPeerNotFound) {
 			status = http.StatusNotFound
 		}
 		c.JSON(status, gin.H{"error": err.Error()})
@@ -136,7 +138,7 @@ func writePeerErr(c *gin.Context, err error) {
 	status := http.StatusBadRequest
 	if errors.Is(err, service.ErrPeerNotFound) {
 		status = http.StatusNotFound
-	} else if errors.Is(err, service.ErrNetworkUnavailable) {
+	} else if service.IsRuntimeFailure(err) || errors.Is(err, service.ErrNetworkUnavailable) {
 		status = http.StatusServiceUnavailable
 	}
 	c.JSON(status, gin.H{"error": err.Error()})

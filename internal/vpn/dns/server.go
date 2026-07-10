@@ -16,13 +16,14 @@ import (
 )
 
 type Server struct {
-	catalog  catalogStore
-	dnsIP    string
-	upstream []string
-	server   *dns.Server
-	serveMu  sync.Mutex
-	stopCh   chan struct{}
-	stopOnce sync.Once
+	catalog    catalogStore
+	dnsIP      string
+	upstreamMu sync.RWMutex
+	upstream   []string
+	server     *dns.Server
+	serveMu    sync.Mutex
+	stopCh     chan struct{}
+	stopOnce   sync.Once
 }
 
 // UpdateDNS replaces in-memory authoritative DNS state.
@@ -32,7 +33,15 @@ func (s *Server) UpdateDNS(catalog runtime.DNSCatalog, peers []runtime.WGPeer) {
 
 // SetUpstream replaces upstream resolver list used for external queries.
 func (s *Server) SetUpstream(upstream []string) {
+	s.upstreamMu.Lock()
 	s.upstream = append([]string(nil), upstream...)
+	s.upstreamMu.Unlock()
+}
+
+func (s *Server) upstreamSnapshot() []string {
+	s.upstreamMu.RLock()
+	defer s.upstreamMu.RUnlock()
+	return append([]string(nil), s.upstream...)
 }
 
 func NewServer(dnsIP string, upstream []string) *Server {
@@ -52,7 +61,7 @@ func (s *Server) StartOnNetstack(tnet *netstack.Net, dnsIP string, port int) err
 		return err
 	}
 	go s.serveNetstack(tnet, dnsIP, port, conn)
-	log.Printf("dns listening on %s:%d (netstack, domain %s, upstream %v)", dnsIP, port, config.DNSDomain, s.upstream)
+	log.Printf("dns listening on %s:%d (netstack, domain %s, upstream %v)", dnsIP, port, config.DNSDomain, s.upstreamSnapshot())
 	return nil
 }
 
@@ -196,14 +205,15 @@ func (s *Server) handle(w dns.ResponseWriter, r *dns.Msg) {
 	}
 
 	if len(external) > 0 {
-		if len(s.upstream) == 0 {
+		upstream := s.upstreamSnapshot()
+		if len(upstream) == 0 {
 			if len(m.Answer) == 0 {
 				m.Rcode = dns.RcodeRefused
 			}
 		} else {
 			fwd := r.Copy()
 			fwd.Question = external
-			if resp, err := s.exchangeUpstream(fwd); err == nil && resp != nil {
+			if resp, err := exchangeDNS(fwd, upstream); err == nil && resp != nil {
 				m.Answer = append(m.Answer, resp.Answer...)
 				m.Ns = append(m.Ns, resp.Ns...)
 				m.Extra = append(m.Extra, resp.Extra...)
@@ -228,5 +238,5 @@ func (s *Server) handle(w dns.ResponseWriter, r *dns.Msg) {
 }
 
 func (s *Server) exchangeUpstream(req *dns.Msg) (*dns.Msg, error) {
-	return exchangeDNS(req, s.upstream)
+	return exchangeDNS(req, s.upstreamSnapshot())
 }

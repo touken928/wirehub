@@ -2,37 +2,85 @@ package bootstrap
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"log"
 	"net/http"
 	"net/netip"
+	"net/url"
 	"os"
 	"os/signal"
-	"regexp"
 	"strconv"
+	"strings"
 	"syscall"
 	"time"
 
 	"github.com/gin-gonic/gin"
+	apihttp "github.com/touken928/wirehub/internal/api/http"
 	"github.com/touken928/wirehub/internal/config"
 	"github.com/touken928/wirehub/internal/repo"
-	apihttp "github.com/touken928/wirehub/internal/api/http"
 	"github.com/touken928/wirehub/internal/service"
 	"github.com/touken928/wirehub/internal/static"
 	"github.com/touken928/wirehub/internal/vpn/runtime"
 )
 
-// setupTokenRE matches setup_token= in query strings so it can be redacted from logs.
-var setupTokenRE = regexp.MustCompile(`setup_token=[^&\s]+`)
+func accessLogFormatter(param gin.LogFormatterParams) string {
+	path := param.Request.URL.Path
+	if raw := param.Request.URL.Query(); len(raw) > 0 {
+		for _, key := range []string{"setup_token", "token"} {
+			if _, ok := raw[key]; ok {
+				raw.Set(key, "REDACTED")
+			}
+		}
+		if encoded := raw.Encode(); encoded != "" {
+			path += "?" + encoded
+		}
+	}
+	param.Path = path
 
-// redactingWriter wraps an io.Writer and redacts sensitive query parameters.
-type redactingWriter struct {
+	var statusColor, methodColor, resetColor, latencyColor string
+	if param.IsOutputColor() {
+		statusColor = param.StatusCodeColor()
+		methodColor = param.MethodColor()
+		resetColor = param.ResetColor()
+		latencyColor = param.LatencyColor()
+	}
+	return fmt.Sprintf("[GIN] %v |%s %3d %s|%s %8v %s| %15s |%s %-7s %s %#v\n%s",
+		param.TimeStamp.Format("2006/01/02 - 15:04:05"), statusColor, param.StatusCode,
+		resetColor, latencyColor, param.Latency, resetColor, param.ClientIP,
+		methodColor, param.Method, resetColor, param.Path, param.ErrorMessage)
+}
+
+type recoveryLogWriter struct {
 	inner io.Writer
 }
 
-func (w *redactingWriter) Write(p []byte) (int, error) {
-	s := setupTokenRE.ReplaceAllString(string(p), "setup_token=REDACTED")
-	return w.inner.Write([]byte(s))
+func (w *recoveryLogWriter) Write(p []byte) (int, error) {
+	lines := strings.Split(string(p), "\n")
+	for i, line := range lines {
+		fields := strings.SplitN(line, " ", 3)
+		if len(fields) != 3 || !strings.HasPrefix(fields[2], "HTTP/") {
+			continue
+		}
+		fields[1] = redactRequestTarget(fields[1])
+		lines[i] = strings.Join(fields, " ")
+	}
+	return w.inner.Write([]byte(strings.Join(lines, "\n")))
+}
+
+func redactRequestTarget(target string) string {
+	u, err := url.ParseRequestURI(target)
+	if err != nil || u.RawQuery == "" {
+		return target
+	}
+	query := u.Query()
+	for _, key := range []string{"setup_token", "token"} {
+		if _, ok := query[key]; ok {
+			query.Set(key, "REDACTED")
+		}
+	}
+	u.RawQuery = query.Encode()
+	return u.RequestURI()
 }
 
 func setupURLHost(cfg *config.RuntimeConfig) string {
@@ -75,8 +123,8 @@ func Run(cfg *config.RuntimeConfig) error {
 
 	gin.SetMode(gin.ReleaseMode)
 	r := gin.New()
-	r.Use(gin.Recovery())
-	r.Use(gin.LoggerWithWriter(&redactingWriter{inner: os.Stdout}))
+	r.Use(gin.RecoveryWithWriter(&recoveryLogWriter{inner: os.Stdout}))
+	r.Use(gin.LoggerWithFormatter(accessLogFormatter))
 
 	stack := runtime.NewStack(cfg, app, r)
 	app.Hub.SetNetworkRuntime(stack)
@@ -111,7 +159,6 @@ func Run(cfg *config.RuntimeConfig) error {
 		WriteTimeout:      60 * time.Second,
 		IdleTimeout:       120 * time.Second,
 	}
-
 	// Start server in background.
 	go func() {
 		log.Printf("WireHub listening on %s", cfg.ListenAddr)

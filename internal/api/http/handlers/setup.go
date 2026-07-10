@@ -48,21 +48,16 @@ func Setup(s *Server, c *gin.Context) {
 	if !requireSetupToken(s, c) {
 		return
 	}
-	configured, err := s.App.IsConfigured()
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-		return
-	}
-	if configured {
-		c.JSON(http.StatusConflict, gin.H{"error": "already configured"})
-		return
-	}
 	var req setupRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
+		if configured, stateErr := s.App.IsConfigured(); stateErr == nil && configured {
+			c.JSON(http.StatusConflict, gin.H{"error": "already configured"})
+			return
+		}
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
-	err = s.App.Setup(service.SetupInput{
+	err := s.App.SetupWithToken(service.SetupInput{
 		Endpoint:       req.Endpoint,
 		Subnet:         req.Subnet,
 		AdminUsername:  req.AdminUsername,
@@ -71,15 +66,19 @@ func Setup(s *Server, c *gin.Context) {
 		MTU:            req.MTU,
 		StatusInterval: req.StatusInterval,
 		UpstreamDNS:    req.UpstreamDNS,
-	})
+	}, c.Query("setup_token"))
 	if err != nil {
+		if errors.Is(err, service.ErrSetupTokenRequired) {
+			c.JSON(http.StatusForbidden, gin.H{"error": "setup token required; check server logs for the first-run setup token"})
+			return
+		}
 		if errors.Is(err, service.ErrAlreadyConfigured) {
 			c.JSON(http.StatusConflict, gin.H{"error": err.Error()})
 			return
 		}
 		status := http.StatusBadRequest
-		if errors.Is(err, service.ErrNetworkUnavailable) {
-			status = http.StatusInternalServerError
+		if service.IsRuntimeFailure(err) || errors.Is(err, service.ErrNetworkUnavailable) {
+			status = http.StatusServiceUnavailable
 		}
 		c.JSON(status, gin.H{"error": err.Error()})
 		return
@@ -108,21 +107,19 @@ func Reset(s *Server, c *gin.Context) {
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
 		return
 	}
-	if _, err := s.App.VerifyAdminPassword(username.(string), req.Password); errors.Is(err, service.ErrInvalidAdminPassword) {
-		c.JSON(http.StatusUnauthorized, gin.H{"error": "password is incorrect"})
-		return
-	} else if err != nil {
-		c.JSON(http.StatusUnauthorized, gin.H{"error": "admin not found"})
-		return
-	}
-	if err := s.App.Reset(); err != nil {
+	newToken := s.newSetupToken()
+	if err := s.App.ResetWithAdminPassword(username.(string), req.Password, newToken); err != nil {
+		if errors.Is(err, service.ErrInvalidAdminPassword) {
+			c.JSON(http.StatusUnauthorized, gin.H{"error": "password is incorrect"})
+			return
+		}
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
 	// After a successful reset, the hub is unconfigured again.
 	// Generate a fresh setup token so the operator can re-run setup.
-	token := s.RegenerateSetupToken()
-	c.JSON(http.StatusOK, gin.H{"ok": true, "setup_token": token})
+	s.setSetupToken(newToken)
+	c.JSON(http.StatusOK, gin.H{"ok": true, "setup_token": newToken})
 }
 
 // requireSetupToken protects setup endpoints while the hub is unconfigured.

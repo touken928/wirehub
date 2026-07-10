@@ -37,11 +37,13 @@ func (a *App) ListPortForwards() (ForwardList, error) {
 
 // CreatePortForward adds a forward rule and syncs the dataplane.
 func (a *App) CreatePortForward(in repo.PortForwardInput) (*repo.PortForward, error) {
+	a.controlMu.Lock()
+	defer a.controlMu.Unlock()
 	rule, err := a.store.CreatePortForward(HubTunnelWebPort(), in)
 	if err != nil {
 		return nil, err
 	}
-	if err := a.Hub.SyncPortForwards(); err != nil {
+	if err := a.reconcileRuntime("port-forward creation", false); err != nil {
 		return nil, err
 	}
 	return rule, nil
@@ -49,11 +51,13 @@ func (a *App) CreatePortForward(in repo.PortForwardInput) (*repo.PortForward, er
 
 // UpdatePortForward updates a forward rule and syncs the dataplane.
 func (a *App) UpdatePortForward(id uint, in repo.PortForwardInput) (*repo.PortForward, error) {
+	a.controlMu.Lock()
+	defer a.controlMu.Unlock()
 	rule, err := a.store.UpdatePortForward(id, HubTunnelWebPort(), in)
 	if err != nil {
 		return nil, err
 	}
-	if err := a.Hub.SyncPortForwards(); err != nil {
+	if err := a.reconcileRuntime("port-forward update", false); err != nil {
 		return nil, err
 	}
 	return rule, nil
@@ -61,10 +65,15 @@ func (a *App) UpdatePortForward(id uint, in repo.PortForwardInput) (*repo.PortFo
 
 // DeletePortForward removes a forward rule and syncs the dataplane.
 func (a *App) DeletePortForward(id uint) error {
+	a.controlMu.Lock()
+	defer a.controlMu.Unlock()
 	if err := a.store.DeletePortForward(id); err != nil {
 		return err
 	}
-	return a.Hub.SyncPortForwards()
+	if err := a.reconcileRuntime("port-forward deletion", false); err != nil {
+		return err
+	}
+	return nil
 }
 
 // ForwardDisplayTarget formats a target host:port for the UI.

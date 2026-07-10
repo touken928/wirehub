@@ -9,6 +9,7 @@ import {
 } from 'react';
 import type { PeerStatus, Settings } from '@/api/types';
 import { readStoredToken, StatusSocket, type StatusMessage } from '@/ws/status';
+import { clearToken } from '@/api/auth';
 
 interface StatusContextValue {
   peers: PeerStatus[];
@@ -33,7 +34,16 @@ export function StatusProvider({ children }: { children: ReactNode }) {
     const token = readStoredToken();
     if (!token) return;
 
-    const socket = new StatusSocket();
+    const socket = new StatusSocket({
+      onDisconnected: () => setConnected(false),
+      onUnauthorized: () => {
+        clearToken();
+        setPeers([]);
+        setSettings(null);
+        setConnected(false);
+        window.location.assign('/login');
+      },
+    });
     socket.subscribe(onMessage);
     socket.connect(token);
 

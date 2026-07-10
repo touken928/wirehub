@@ -43,30 +43,54 @@ type MapDetail struct {
 }
 
 func (s *Store) ListServiceMaps() ([]ServiceMap, error) {
+	s.lease.RLock()
+	defer s.lease.RUnlock()
+	return listServiceMapsDB(s.db)
+}
+
+func listServiceMapsDB(db *gorm.DB) ([]ServiceMap, error) {
 	var maps []ServiceMap
-	err := s.db.Order("slug asc").Find(&maps).Error
+	err := db.Order("slug asc").Find(&maps).Error
 	return maps, err
 }
 
 func (s *Store) GetServiceMap(id uint) (*ServiceMap, error) {
+	s.lease.RLock()
+	defer s.lease.RUnlock()
+	return getServiceMapDB(s.db, id)
+}
+
+func getServiceMapDB(db *gorm.DB, id uint) (*ServiceMap, error) {
 	var entry ServiceMap
-	if err := s.db.First(&entry, id).Error; err != nil {
+	if err := db.First(&entry, id).Error; err != nil {
 		return nil, err
 	}
 	return &entry, nil
 }
 
 func (s *Store) GetServiceMapBySlug(slug string) (*ServiceMap, error) {
+	s.lease.RLock()
+	defer s.lease.RUnlock()
+	return getServiceMapBySlugDB(s.db, slug)
+}
+
+func getServiceMapBySlugDB(db *gorm.DB, slug string) (*ServiceMap, error) {
 	var entry ServiceMap
-	if err := s.db.Where("slug = ?", slug).First(&entry).Error; err != nil {
+	if err := db.Where("slug = ?", slug).First(&entry).Error; err != nil {
 		return nil, err
 	}
 	return &entry, nil
 }
 
 func (s *Store) ListMapGroupIDs(mapID uint) ([]uint, error) {
+	s.lease.RLock()
+	defer s.lease.RUnlock()
+	return listMapGroupIDsDB(s.db, mapID)
+}
+
+func listMapGroupIDsDB(db *gorm.DB, mapID uint) ([]uint, error) {
 	var rows []MapGroupAllow
-	if err := s.db.Where("relay_id = ?", mapID).Find(&rows).Error; err != nil {
+	if err := db.Where("relay_id = ?", mapID).Find(&rows).Error; err != nil {
 		return nil, err
 	}
 	out := make([]uint, len(rows))
@@ -77,13 +101,18 @@ func (s *Store) ListMapGroupIDs(mapID uint) ([]uint, error) {
 }
 
 func (s *Store) ListMapDetails() ([]MapDetail, error) {
-	maps, err := s.ListServiceMaps()
+	s.lease.RLock()
+	defer s.lease.RUnlock()
+	if hook := s.testHook(func(s *Store) func() { return s.listMapDetailsHook }); hook != nil {
+		hook()
+	}
+	maps, err := listServiceMapsDB(s.db)
 	if err != nil {
 		return nil, err
 	}
 	out := make([]MapDetail, len(maps))
 	for i, r := range maps {
-		groups, err := s.ListMapGroupIDs(r.ID)
+		groups, err := listMapGroupIDsDB(s.db, r.ID)
 		if err != nil {
 			return nil, err
 		}
@@ -97,11 +126,13 @@ func (s *Store) ListMapDetails() ([]MapDetail, error) {
 }
 
 func (s *Store) GetMapDetail(id uint) (*MapDetail, error) {
-	entry, err := s.GetServiceMap(id)
+	s.lease.RLock()
+	defer s.lease.RUnlock()
+	entry, err := getServiceMapDB(s.db, id)
 	if err != nil {
 		return nil, err
 	}
-	groups, err := s.ListMapGroupIDs(id)
+	groups, err := listMapGroupIDsDB(s.db, id)
 	if err != nil {
 		return nil, err
 	}
@@ -113,6 +144,8 @@ func (s *Store) GetMapDetail(id uint) (*MapDetail, error) {
 }
 
 func (s *Store) GetPeerByWGIP(ip string) (*Peer, error) {
+	s.lease.RLock()
+	defer s.lease.RUnlock()
 	var peer Peer
 	if err := s.db.Where("wg_ip = ?", ip).First(&peer).Error; err != nil {
 		return nil, err
@@ -120,8 +153,20 @@ func (s *Store) GetPeerByWGIP(ip string) (*Peer, error) {
 	return &peer, nil
 }
 
+func getPeerByWGIPDB(db *gorm.DB, ip string) (*Peer, error) {
+	var peer Peer
+	if err := db.Where("wg_ip = ?", ip).First(&peer).Error; err != nil {
+		return nil, err
+	}
+	return &peer, nil
+}
+
 func (s *Store) CreateServiceMap(in MapInput) (*MapDetail, error) {
-	conflict, err := s.MapSlugConflictsPeer(in.Slug)
+	s.ipAllocationMu.Lock()
+	defer s.ipAllocationMu.Unlock()
+	s.lease.RLock()
+	defer s.lease.RUnlock()
+	conflict, err := mapSlugConflictsPeerDB(s.db, in.Slug)
 	if err != nil {
 		return nil, err
 	}
@@ -132,12 +177,15 @@ func (s *Store) CreateServiceMap(in MapInput) (*MapDetail, error) {
 	if err != nil {
 		return nil, err
 	}
-	settings, err := s.GetSettings()
+	settings, err := getSettingsDB(s.db)
 	if err != nil {
 		return nil, err
 	}
-	vip, err := s.AllocateMapIP(settings.WGSubnet, settings.HubIP, settings.DNSIP)
+	vip, err := s.allocateSubnetIP(settings.WGSubnet, settings.HubIP, settings.DNSIP)
 	if err != nil {
+		if errors.Is(err, errSubnetIPUnavailable) {
+			return nil, ErrMapIPUnavailable
+		}
 		return nil, err
 	}
 	entry.VirtualIP = vip
@@ -158,15 +206,17 @@ func (s *Store) CreateServiceMap(in MapInput) (*MapDetail, error) {
 	}); err != nil {
 		return nil, err
 	}
-	return s.GetMapDetail(entry.ID)
+	return getMapDetailDB(s.db, entry.ID)
 }
 
 func (s *Store) UpdateServiceMap(id uint, in MapInput) (*MapDetail, error) {
-	existing, err := s.GetServiceMap(id)
+	s.lease.RLock()
+	defer s.lease.RUnlock()
+	existing, err := getServiceMapDB(s.db, id)
 	if err != nil {
 		return nil, err
 	}
-	conflict, err := s.MapSlugConflictsPeer(in.Slug)
+	conflict, err := mapSlugConflictsPeerDB(s.db, in.Slug)
 	if err != nil {
 		return nil, err
 	}
@@ -178,7 +228,7 @@ func (s *Store) UpdateServiceMap(id uint, in MapInput) (*MapDetail, error) {
 		return nil, err
 	}
 	if entry.Slug != existing.Slug {
-		if _, err := s.GetServiceMapBySlug(entry.Slug); err == nil {
+		if _, err := getServiceMapBySlugDB(s.db, entry.Slug); err == nil {
 			return nil, ErrMapSlugConflict
 		} else if !errors.Is(err, gorm.ErrRecordNotFound) {
 			return nil, err
@@ -206,10 +256,12 @@ func (s *Store) UpdateServiceMap(id uint, in MapInput) (*MapDetail, error) {
 	}); err != nil {
 		return nil, err
 	}
-	return s.GetMapDetail(id)
+	return getMapDetailDB(s.db, id)
 }
 
 func (s *Store) DeleteServiceMap(id uint) error {
+	s.lease.RLock()
+	defer s.lease.RUnlock()
 	return s.db.Transaction(func(tx *gorm.DB) error {
 		if err := tx.Where("relay_id = ?", id).Delete(&MapGroupAllow{}).Error; err != nil {
 			return err
@@ -219,6 +271,8 @@ func (s *Store) DeleteServiceMap(id uint) error {
 }
 
 func (s *Store) AllocateMapIP(subnet, hubIP, dnsIP string) (string, error) {
+	s.lease.RLock()
+	defer s.lease.RUnlock()
 	ip, err := s.allocateSubnetIP(subnet, hubIP, dnsIP)
 	if errors.Is(err, errSubnetIPUnavailable) {
 		return "", ErrMapIPUnavailable
@@ -253,13 +307,21 @@ func normalizeMapInput(in MapInput) (*ServiceMap, []uint, error) {
 }
 
 func (s *Store) MapSlugConflictsPeer(slug string) (bool, error) {
+	s.lease.RLock()
+	defer s.lease.RUnlock()
+	return mapSlugConflictsPeerDB(s.db, slug)
+}
+
+func mapSlugConflictsPeerDB(db *gorm.DB, slug string) (bool, error) {
 	var count int64
-	err := s.db.Model(&Peer{}).Where("dns_name = ? OR name = ?", slug, slug).Count(&count).Error
+	err := db.Model(&Peer{}).Where("dns_name = ? OR name = ?", slug, slug).Count(&count).Error
 	return count > 0, err
 }
 
 // MapVirtualIPs returns map VIP strings for netstack local addresses.
 func (s *Store) MapVirtualIPs() ([]string, error) {
+	s.lease.RLock()
+	defer s.lease.RUnlock()
 	var maps []ServiceMap
 	if err := s.db.Find(&maps).Error; err != nil {
 		return nil, err
@@ -273,7 +335,9 @@ func (s *Store) MapVirtualIPs() ([]string, error) {
 
 // LookupMapVIP resolves a map slug to its virtual IP (integration / legacy helpers).
 func (s *Store) LookupMapVIP(slug string) (string, bool) {
-	entry, err := s.GetServiceMapBySlug(slug)
+	s.lease.RLock()
+	defer s.lease.RUnlock()
+	entry, err := getServiceMapBySlugDB(s.db, slug)
 	if err != nil {
 		return "", false
 	}
@@ -281,6 +345,8 @@ func (s *Store) LookupMapVIP(slug string) (string, bool) {
 }
 
 func (s *Store) PeerMayAccessMap(peerGroupID, mapID uint) (bool, error) {
+	s.lease.RLock()
+	defer s.lease.RUnlock()
 	if peerGroupID == 0 {
 		return false, nil
 	}
@@ -292,9 +358,32 @@ func (s *Store) PeerMayAccessMap(peerGroupID, mapID uint) (bool, error) {
 }
 
 func (s *Store) MapAllowedForPeer(peerWGIP string, mapID uint) (bool, error) {
-	peer, err := s.GetPeerByWGIP(peerWGIP)
+	s.lease.RLock()
+	defer s.lease.RUnlock()
+	peer, err := getPeerByWGIPDB(s.db, peerWGIP)
 	if err != nil {
 		return false, nil
 	}
-	return s.PeerMayAccessMap(peer.GroupID, mapID)
+	return peerMayAccessMapDB(s.db, peer.GroupID, mapID)
+}
+
+func getMapDetailDB(db *gorm.DB, id uint) (*MapDetail, error) {
+	entry, err := getServiceMapDB(db, id)
+	if err != nil {
+		return nil, err
+	}
+	groups, err := listMapGroupIDsDB(db, id)
+	if err != nil {
+		return nil, err
+	}
+	return &MapDetail{ServiceMap: *entry, TargetDisplay: entry.TargetHost, AllowedGroups: groups}, nil
+}
+
+func peerMayAccessMapDB(db *gorm.DB, peerGroupID, mapID uint) (bool, error) {
+	if peerGroupID == 0 {
+		return false, nil
+	}
+	var count int64
+	err := db.Model(&MapGroupAllow{}).Where("relay_id = ? AND group_id = ?", mapID, peerGroupID).Count(&count).Error
+	return count > 0, err
 }

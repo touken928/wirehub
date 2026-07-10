@@ -10,15 +10,15 @@ type Admin struct {
 }
 
 type Settings struct {
-	ID               uint   `gorm:"primaryKey" json:"id"`
-	ServerPublicKey  string `json:"server_public_key"`
-	ServerPrivateKey string `json:"-"`
-	Endpoint         string `json:"endpoint"`
-	ListenPort       int    `json:"listen_port"` // client Endpoint port only; hub WG bind uses CLI --port
-	WGSubnet         string `json:"wg_subnet"`
-	HubIP            string `json:"hub_ip"`
-	DNSIP            string `json:"dns_ip"`
-	DNSSuffix        string `json:"dns_suffix"`
+	ID               uint     `gorm:"primaryKey" json:"id"`
+	ServerPublicKey  string   `json:"server_public_key"`
+	ServerPrivateKey string   `json:"-"`
+	Endpoint         string   `json:"endpoint"`
+	ListenPort       int      `json:"listen_port"` // client Endpoint port only; hub WG bind uses CLI --port
+	WGSubnet         string   `json:"wg_subnet"`
+	HubIP            string   `json:"hub_ip"`
+	DNSIP            string   `json:"dns_ip"`
+	DNSSuffix        string   `json:"dns_suffix"`
 	MTU              int      `json:"mtu"`
 	StatusInterval   int      `json:"status_interval"`
 	UpstreamDNS      []string `gorm:"serializer:json" json:"upstream_dns"`

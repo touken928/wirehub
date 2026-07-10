@@ -27,6 +27,7 @@ type Hub struct {
 	liveDP          Dataplane
 	statusMu        sync.Mutex
 	statusStop      chan struct{}
+	statusDone      chan struct{}
 	statusRunning   bool
 	statusPublisher StatusPublisher
 }
@@ -78,7 +79,19 @@ func (h *Hub) onStopped() {
 // if a poller is already running, subsequent calls are no-ops.
 // Non-positive intervals default to 1 second to avoid NewTicker panics.
 func (h *Hub) StartStatusPoller(intervalSec int) {
-	h.statusMu.Lock()
+	for {
+		h.statusMu.Lock()
+		if h.statusRunning {
+			h.statusMu.Unlock()
+			return
+		}
+		oldDone := h.statusDone
+		if oldDone == nil {
+			break
+		}
+		h.statusMu.Unlock()
+		<-oldDone
+	}
 	defer h.statusMu.Unlock()
 	if h.statusRunning {
 		return
@@ -88,11 +101,21 @@ func (h *Hub) StartStatusPoller(intervalSec int) {
 	}
 	h.statusRunning = true
 	ch := make(chan struct{})
+	done := make(chan struct{})
 	h.statusStop = ch
+	h.statusDone = done
 
 	go func() {
 		ticker := time.NewTicker(time.Duration(intervalSec) * time.Second)
 		defer ticker.Stop()
+		defer func() {
+			close(done)
+			h.statusMu.Lock()
+			if h.statusDone == done {
+				h.statusDone = nil
+			}
+			h.statusMu.Unlock()
+		}()
 		for {
 			select {
 			case <-ticker.C:
@@ -108,13 +131,24 @@ func (h *Hub) StartStatusPoller(intervalSec int) {
 // and when no poller is running.
 func (h *Hub) StopStatusPoller() {
 	h.statusMu.Lock()
-	defer h.statusMu.Unlock()
 	if !h.statusRunning {
+		done := h.statusDone
+		h.statusMu.Unlock()
+		if done != nil {
+			<-done
+		}
 		return
 	}
-	close(h.statusStop)
+	stop := h.statusStop
+	done := h.statusDone
+	close(stop)
 	h.statusStop = nil
 	h.statusRunning = false
+	h.statusMu.Unlock()
+	// Stack.Stop invokes this callback before taking the stack lock, so waiting
+	// here cannot invert the stack/stats lock order. This also guarantees that
+	// a restart cannot overlap the previous poller's final publication.
+	<-done
 }
 
 // SyncPortForwards pushes port-forward rules to the live network stack.
@@ -144,6 +178,26 @@ func (h *Hub) SyncMaps() error {
 		return err
 	}
 	return h.app.SyncAccessFilter()
+}
+
+// SyncRuntimeBundle loads the authoritative database bundle and publishes it
+// as one runtime snapshot after a persisted mutation.
+func (h *Hub) SyncRuntimeBundle() error {
+	bundle, err := h.app.LoadSyncBundle()
+	if err != nil {
+		return err
+	}
+	return h.syncRuntimeBundle(bundle)
+}
+
+func (h *Hub) syncRuntimeBundle(bundle domainruntime.SyncBundle) error {
+	h.dpMu.RLock()
+	dp := h.liveDP
+	h.dpMu.RUnlock()
+	if dp == nil {
+		return nil
+	}
+	return dp.FullSync(bundle)
 }
 
 func (h *Hub) pollPeerStats() {

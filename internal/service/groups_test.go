@@ -15,12 +15,12 @@ func testApp(t *testing.T) *App {
 	if err != nil {
 		t.Fatal(err)
 	}
-	settings := &repo.Settings{
-		WGSubnet: "100.127.0.0/24",
-		HubIP:    "100.127.0.1",
-		DNSIP:    "100.127.0.1",
-	}
-	if err := st.DB().Create(settings).Error; err != nil {
+	if err := st.Setup(repo.SetupInput{
+		Endpoint: "example.com", Subnet: "100.127.0.0/24",
+		AdminUsername: "admin", AdminPassword: "testpass123",
+		ListenPort: 8443, MTU: 1420, StatusInterval: 1,
+		ServerPrivateKey: "private", ServerPublicKey: "public",
+	}); err != nil {
 		t.Fatal(err)
 	}
 	return NewApp(st)

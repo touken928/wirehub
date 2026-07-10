@@ -16,16 +16,12 @@ func testStore(t *testing.T) *repo.Store {
 	if err != nil {
 		t.Fatal(err)
 	}
-	hash, err := repo.HashPassword("testpass123")
-	if err != nil {
-		t.Fatal(err)
-	}
-	admin := &repo.Admin{
-		Username:     "admin",
-		PasswordHash: hash,
-		TokenVersion: 0,
-	}
-	if err := st.DB().Create(admin).Error; err != nil {
+	if err := st.Setup(repo.SetupInput{
+		Endpoint: "example.com", Subnet: "100.127.0.0/24",
+		AdminUsername: "admin", AdminPassword: "testpass123",
+		ListenPort: 8443, MTU: 1420, StatusInterval: 1,
+		ServerPrivateKey: "private", ServerPublicKey: "public",
+	}); err != nil {
 		t.Fatal(err)
 	}
 	return st

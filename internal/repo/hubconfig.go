@@ -19,7 +19,9 @@ func (s *Settings) ToHubConfig(adminUsername string) hub.HubConfig {
 }
 
 func (s *Store) UpdateMutableSettings(mtu, statusInterval int, upstreamDNS []string) error {
-	settings, err := s.GetSettings()
+	s.lease.RLock()
+	defer s.lease.RUnlock()
+	settings, err := getSettingsDB(s.db)
 	if err != nil {
 		return err
 	}
@@ -39,10 +41,12 @@ func (s *Store) UpdateMutableSettings(mtu, statusInterval int, upstreamDNS []str
 	settings.MTU = norm.MTU
 	settings.StatusInterval = norm.StatusInterval
 	settings.UpstreamDNS = norm.UpstreamDNS
-	return s.UpdateSettings(settings)
+	return s.db.Save(settings).Error
 }
 
 func (s *Store) GetPrimaryAdmin() (*Admin, error) {
+	s.lease.RLock()
+	defer s.lease.RUnlock()
 	var admin Admin
 	if err := s.db.Order("id asc").First(&admin).Error; err != nil {
 		return nil, err
@@ -51,6 +55,8 @@ func (s *Store) GetPrimaryAdmin() (*Admin, error) {
 }
 
 func (s *Store) UpdateAdminPassword(adminID uint, newPassword string) error {
+	s.lease.RLock()
+	defer s.lease.RUnlock()
 	hash, err := HashPassword(newPassword)
 	if err != nil {
 		return err

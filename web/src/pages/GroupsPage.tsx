@@ -60,6 +60,7 @@ export default function GroupsPage() {
 
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState('');
+  const [mutationError, setMutationError] = useState('');
   const [flowNodes, setFlowNodes] = useState<Node<GroupNodeData>[]>([]);
   const [flowEdges, setFlowEdges] = useState<Edge[]>([]);
   const [graphRevision, setGraphRevision] = useState(0);
@@ -84,12 +85,9 @@ export default function GroupsPage() {
 
   const load = useCallback(async () => {
     const graph = await api.getGroupGraph();
-    const { nodes, edges, layoutPayload } = graphToFlow(graph, { autoLayout: true });
+    const { nodes, edges } = graphToFlow(graph);
     setFlowNodes(nodes);
     setFlowEdges(edges);
-    if (layoutPayload.length > 0) {
-      void api.updateGroupLayout(layoutPayload).catch(() => {});
-    }
     const groups = graph.groups ?? [];
     setGraphGroups(groups);
     setGraphRevision((v) => v + 1);
@@ -154,13 +152,14 @@ export default function GroupsPage() {
   }, [confirmDisconnectLinks]);
 
   const onLayoutChange = useCallback(async (nodes: Node<GroupNodeData>[]) => {
-    await api.updateGroupLayout(
-      nodes.map((n) => ({
-        id: Number(n.id),
-        pos_x: n.position.x,
-        pos_y: n.position.y,
-      })),
-    );
+    setMutationError('');
+    try {
+      await api.updateGroupLayout(nodes.map((n) => ({
+        id: Number(n.id), pos_x: n.position.x, pos_y: n.position.y,
+      })));
+    } catch (err) {
+      setMutationError(getErrorMessage(err, 'Failed to save group layout'));
+    }
   }, []);
 
   const onNodeContextMenu = useCallback((event: React.MouseEvent, node: Node<GroupNodeData>) => {
@@ -171,10 +170,15 @@ export default function GroupsPage() {
 
   const handleCreateGroup = async () => {
     if (!newGroupName.trim()) return;
-    await api.createGroup({ name: newGroupName.trim(), pos_x: 100, pos_y: 100 });
-    setCreateOpen(false);
-    setNewGroupName('');
-    await load();
+    setMutationError('');
+    try {
+      await api.createGroup({ name: newGroupName.trim(), pos_x: 100, pos_y: 100 });
+      setCreateOpen(false);
+      setNewGroupName('');
+      await load();
+    } catch (err) {
+      setMutationError(getErrorMessage(err, 'Failed to create group'));
+    }
   };
 
   const handleCreatePeerInGroup = async () => {
@@ -228,10 +232,30 @@ export default function GroupsPage() {
     await refreshDetail();
   };
 
+  const handleTogglePeer = async (peerId: number) => {
+    setMutationError('');
+    try {
+      await api.togglePeer(peerId);
+      await refreshDetail();
+    } catch (err) {
+      setMutationError(getErrorMessage(err, 'Failed to toggle peer'));
+    }
+  };
+
   const groupOptions = useMemo(
     () => graphGroups.map((g) => ({ id: g.id, name: g.name })),
     [graphGroups],
   );
+
+  const retryLoad = async () => {
+    setLoading(true);
+    try {
+      await load();
+    } catch (err) {
+      setLoadError(getErrorMessage(err, 'Failed to load groups'));
+      setLoading(false);
+    }
+  };
 
   if (loading) return <Spinner label="Loading groups..." />;
 
@@ -240,7 +264,7 @@ export default function GroupsPage() {
       <div className={`${pageLayout.page} ${pageLayout.pageFill}`}>
         <PageHeader title="Groups" />
         <Text style={{ color: tokens.colorPaletteRedForeground1 }}>{loadError}</Text>
-        <Button onClick={() => { setLoading(true); void load(); }}>Retry</Button>
+        <Button onClick={() => void retryLoad()}>Retry</Button>
       </div>
     );
   }
@@ -251,6 +275,7 @@ export default function GroupsPage() {
         title="Groups"
         description="Drag between groups to connect. Use the switch at bottom-left for one-way links."
       />
+      {mutationError && <Text style={{ color: tokens.colorPaletteRedForeground1 }}>{mutationError}</Text>}
 
       <div className={styles.workspace}>
         <div className={styles.flow}>
@@ -283,7 +308,7 @@ export default function GroupsPage() {
           onRenamePeer={handleRenamePeer}
           onMovePeer={handleMovePeer}
           onShowConfig={(id) => void peerConfig.showConfig(id)}
-          onTogglePeer={(id) => void api.togglePeer(id).then(refreshDetail)}
+          onTogglePeer={(id) => void handleTogglePeer(id)}
           onDeletePeer={(id, name) => void handleDeletePeer(id, name)}
         />
       </div>

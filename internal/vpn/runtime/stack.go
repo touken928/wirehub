@@ -9,12 +9,12 @@ import (
 	"time"
 
 	"github.com/touken928/wirehub/internal/config"
+	dompolicy "github.com/touken928/wirehub/internal/domain/policy"
 	"github.com/touken928/wirehub/internal/domain/runtime"
 	"github.com/touken928/wirehub/internal/vpn/core"
 	vpndns "github.com/touken928/wirehub/internal/vpn/dns"
 	"github.com/touken928/wirehub/internal/vpn/ingress"
 	"github.com/touken928/wirehub/internal/vpn/netstack"
-	dompolicy "github.com/touken928/wirehub/internal/domain/policy"
 	vpnpolicy "github.com/touken928/wirehub/internal/vpn/policy"
 	"github.com/touken928/wirehub/internal/vpn/tunnel"
 )
@@ -22,6 +22,9 @@ import (
 // Stack manages WireGuard, DNS, tunnel web, and L4 ingress on the hub netstack.
 type Stack struct {
 	mu           sync.Mutex
+	lifecycleMu  sync.Mutex
+	generation   uint64
+	stopping     bool
 	cfg          *config.RuntimeConfig
 	cb           Callbacks
 	httpHandler  http.Handler
@@ -96,6 +99,8 @@ func (s *Stack) Start(bundle runtime.SyncBundle) error {
 	}
 
 	s.tunnelMgr = tunnelMgr
+	s.generation++
+	startGeneration := s.generation
 	s.dnsServer = dnsServer
 	s.tunnelSrv = tunnelSrv
 	s.startBundle = bundle
@@ -109,8 +114,19 @@ func (s *Stack) Start(bundle runtime.SyncBundle) error {
 	tunnelMgr.SetAccessPolicy(vpnpolicy.Apply(bundle.Policy))
 	s.mu.Unlock()
 
-	// Callback may re-enter Stack (e.g. SyncAccessFilter → ApplyPolicy); must not hold s.mu.
-	s.cb.OnStarted(s)
+	// Serialize lifecycle callbacks and recheck state so a concurrent Stop can
+	// invalidate this start before it publishes OnStarted.
+	s.lifecycleMu.Lock()
+	s.mu.Lock()
+	valid := s.tunnelMgr == tunnelMgr && s.generation == startGeneration && !s.stopping
+	s.mu.Unlock()
+	if valid && s.cb != nil {
+		s.cb.OnStarted(s)
+	}
+	s.lifecycleMu.Unlock()
+	if !valid {
+		return nil
+	}
 
 	log.Printf("WireHub VPN stack started (WG UDP port %d, client endpoint port %d)", wgPort, bundle.Settings.ListenPort)
 	return nil
@@ -154,6 +170,10 @@ func (s *Stack) rollbackStart(dnsServer *vpndns.Server, tunnelSrv *http.Server, 
 	if s.forwardProxy != nil {
 		s.forwardProxy.Stop()
 		s.forwardProxy = nil
+	}
+	if s.mapProxy != nil {
+		s.mapProxy.Stop()
+		s.mapProxy = nil
 	}
 	_ = tunnelMgr.Close()
 	s.tunnelMgr = nil
@@ -271,14 +291,25 @@ func (s *Stack) GetStats() (map[string]tunnel.PeerStats, error) {
 }
 
 func (s *Stack) Stop() error {
+	// Stop the service poller before taking the stack lock. A stats call may be
+	// waiting for this lock; waiting for the poller here would deadlock.
 	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	if s.tunnelMgr == nil {
+	if s.tunnelMgr == nil || s.stopping {
+		s.mu.Unlock()
 		return nil
 	}
+	s.stopping = true
+	s.generation++
+	s.mu.Unlock()
 
-	s.cb.OnStopped()
+	s.lifecycleMu.Lock()
+	if s.cb != nil {
+		s.cb.OnStopped()
+	}
+	s.lifecycleMu.Unlock()
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
 
 	if s.tunnelMgr != nil {
 		_ = s.tunnelMgr.Down()
@@ -308,6 +339,7 @@ func (s *Stack) Stop() error {
 
 	s.closeTunnel()
 	s.tunnelMgr = nil
+	s.stopping = false
 	log.Printf("WireHub VPN stack stopped")
 	return nil
 }

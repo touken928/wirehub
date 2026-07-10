@@ -4,7 +4,36 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	dompolicy "github.com/touken928/wirehub/internal/domain/policy"
+	domainruntime "github.com/touken928/wirehub/internal/domain/runtime"
+	"github.com/touken928/wirehub/internal/vpn/tunnel"
 )
+
+type blockedStatsDataplane struct {
+	started chan struct{}
+	release chan struct{}
+	once    sync.Once
+}
+
+func (d *blockedStatsDataplane) Start(domainruntime.SyncBundle) error         { return nil }
+func (d *blockedStatsDataplane) Stop() error                                  { return nil }
+func (d *blockedStatsDataplane) ReloadSettings() error                        { return nil }
+func (d *blockedStatsDataplane) SyncPortForwards() error                      { return nil }
+func (d *blockedStatsDataplane) SyncMaps() error                              { return nil }
+func (d *blockedStatsDataplane) HubListenPort() int                           { return 0 }
+func (d *blockedStatsDataplane) SyncPeer(domainruntime.WGPeer) error          { return nil }
+func (d *blockedStatsDataplane) RemovePeer(string) error                      { return nil }
+func (d *blockedStatsDataplane) ApplyPolicy(dompolicy.AccessPolicySpec) error { return nil }
+func (d *blockedStatsDataplane) UpdateDNS(domainruntime.DNSCatalog, []domainruntime.WGPeer) error {
+	return nil
+}
+func (d *blockedStatsDataplane) FullSync(domainruntime.SyncBundle) error { return nil }
+func (d *blockedStatsDataplane) GetStats() (map[string]tunnel.PeerStats, error) {
+	d.once.Do(func() { close(d.started) })
+	<-d.release
+	return nil, nil
+}
 
 // countingPublisher implements StatusPublisher with a call counter.
 type countingPublisher struct {
@@ -54,6 +83,39 @@ func TestStartStopStatusPoller_Restart(t *testing.T) {
 	// Restart
 	h.StartStatusPoller(1)
 	time.Sleep(200 * time.Millisecond)
+	h.StopStatusPoller()
+}
+
+func TestStopStatusPollerWaitsForBlockedStats(t *testing.T) {
+	h := &Hub{}
+	dp := &blockedStatsDataplane{started: make(chan struct{}), release: make(chan struct{})}
+	h.dpMu.Lock()
+	h.liveDP = dp
+	h.dpMu.Unlock()
+	h.StartStatusPoller(1)
+	select {
+	case <-dp.started:
+	case <-time.After(2 * time.Second):
+		t.Fatal("poller did not enter blocked stats call")
+	}
+	stopDone := make(chan struct{})
+	go func() {
+		h.StopStatusPoller()
+		close(stopDone)
+	}()
+	select {
+	case <-stopDone:
+		t.Fatal("stopping poller returned before blocked stats completed")
+	case <-time.After(500 * time.Millisecond):
+	}
+	close(dp.release)
+	select {
+	case <-stopDone:
+	case <-time.After(2 * time.Second):
+		t.Fatal("stopping poller did not complete after stats returned")
+	}
+	// Start must wait for the old poller to exit before creating a new one.
+	h.StartStatusPoller(3600)
 	h.StopStatusPoller()
 }
 
@@ -179,5 +241,3 @@ func TestStatusPoller_NoRace(t *testing.T) {
 	time.Sleep(10 * time.Millisecond)
 	h.StopStatusPoller()
 }
-
-

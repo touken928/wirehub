@@ -159,6 +159,16 @@ export function PeerMemberCard({
   const [moveOpen, setMoveOpen] = useState(false);
   const [moveGroupId, setMoveGroupId] = useState('');
   const [moveError, setMoveError] = useState('');
+  const [toggleError, setToggleError] = useState('');
+
+  const handleToggle = async () => {
+    setToggleError('');
+    try {
+      await onToggle(peer.id);
+    } catch (err) {
+      setToggleError(getErrorMessage(err, 'Toggle failed'));
+    }
+  };
 
   const openRename = () => {
     setRenameValue(peer.name);
@@ -197,6 +207,9 @@ export function PeerMemberCard({
 
   return (
     <>
+      {toggleError && (
+        <Text size={200} style={{ color: tokens.colorPaletteRedForeground1 }}>{toggleError}</Text>
+      )}
       {layout === 'row' ? (
         <MemberRowCard statColumns={4}>
           <MemberRowIdentity
@@ -224,7 +237,7 @@ export function PeerMemberCard({
           <MemberRowActions>
             <Button size="small" icon={<PeopleTeamRegular />} onClick={openMove}>Group</Button>
             <Button size="small" icon={<ArrowDownloadRegular />} onClick={() => onShowConfig(peer.id)}>Config</Button>
-            <Button size="small" icon={<PowerRegular />} onClick={() => onToggle(peer.id)}>Toggle</Button>
+            <Button size="small" icon={<PowerRegular />} onClick={() => void handleToggle()}>Toggle</Button>
             <Button size="small" icon={<EditRegular />} appearance="subtle" aria-label="Rename peer" onClick={openRename} />
             <Button size="small" icon={<DeleteRegular />} appearance="subtle" aria-label="Delete peer" onClick={() => onDelete(peer.id, peer.name)} />
           </MemberRowActions>
@@ -288,7 +301,7 @@ export function PeerMemberCard({
             <Button className={styles.actionButton} size="small" icon={<ArrowDownloadRegular />} onClick={() => onShowConfig(peer.id)}>
               Config
             </Button>
-            <Button className={styles.actionButton} size="small" icon={<PowerRegular />} onClick={() => onToggle(peer.id)}>
+            <Button className={styles.actionButton} size="small" icon={<PowerRegular />} onClick={() => void handleToggle()}>
               Toggle
             </Button>
           </div>

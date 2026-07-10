@@ -2,6 +2,8 @@ package repo
 
 // IsHubListenPortUsed reports whether listenPort is taken by a forward or the hub web/WG port.
 func (s *Store) IsHubListenPortUsed(listenPort int) (bool, error) {
+	s.lease.RLock()
+	defer s.lease.RUnlock()
 	return s.isHubListenPortUsed(listenPort, 0)
 }
 

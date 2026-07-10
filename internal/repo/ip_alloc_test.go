@@ -4,6 +4,7 @@ import (
 	"errors"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/touken928/wirehub/internal/config"
@@ -462,6 +463,75 @@ func TestIPAllocation_AllocateMapIP_ViaStore(t *testing.T) {
 	}
 	if vip == "" || vip == "100.127.0.1" {
 		t.Fatalf("unexpected VIP %q", vip)
+	}
+}
+
+func TestIPAllocation_ConcurrentPeerMapCreationIsGloballyUnique(t *testing.T) {
+	st := testIPAllocStore(t)
+	g, err := st.CreateGroup("concurrent", 0, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	const n = 24
+	start := make(chan struct{})
+	results := make(chan string, n)
+	errs := make(chan error, n)
+	var wg sync.WaitGroup
+	for i := 0; i < n; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			<-start
+			if i%2 == 0 {
+				peer := &Peer{Name: peerName(i), DNSName: peerName(i), PublicKey: "pk-" + peerName(i), PrivateKey: "sk-" + peerName(i), GroupID: g.ID, Enabled: true}
+				err := st.CreatePeerWithAllocatedIP(peer, "100.127.0.0/24", "100.127.0.1", "100.127.0.1")
+				if err != nil {
+					errs <- err
+					return
+				}
+				results <- peer.WGIP
+				return
+			}
+			mapDetail, err := st.CreateServiceMap(MapInput{Slug: "concurrent-" + peerName(i), TargetHost: "127.0.0.1", AllowedGroups: []uint{g.ID}})
+			if err != nil {
+				errs <- err
+				return
+			}
+			results <- mapDetail.VirtualIP
+		}(i)
+	}
+	close(start)
+	wg.Wait()
+	close(results)
+	close(errs)
+	for err := range errs {
+		t.Fatal(err)
+	}
+	seen := make(map[string]bool)
+	for ip := range results {
+		if seen[ip] {
+			t.Fatalf("duplicate successful allocation %q", ip)
+		}
+		seen[ip] = true
+	}
+	if len(seen) != n {
+		t.Fatalf("successful allocations = %d, want %d", len(seen), n)
+	}
+}
+
+func TestIPAllocation_DirectCreationPathsReturnTypedExhaustion(t *testing.T) {
+	st := testIPAllocStoreWithSubnet(t, "10.0.0.0/31", "10.0.0.1", "10.0.0.1")
+	g, err := st.CreateGroup("exhausted", 0, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	peer := &Peer{Name: "exhausted", DNSName: "exhausted", PublicKey: "pk-exhausted", PrivateKey: "sk-exhausted", GroupID: 1, Enabled: true}
+	peer.GroupID = g.ID
+	if err := st.CreatePeerWithAllocatedIP(peer, "10.0.0.0/31", "10.0.0.1", "10.0.0.1"); !errors.Is(err, ErrIPAllocationUnavailable) {
+		t.Fatalf("peer creation error = %v, want ErrIPAllocationUnavailable", err)
+	}
+	if _, err := st.CreateServiceMap(MapInput{Slug: "exhausted-map", TargetHost: "127.0.0.1", AllowedGroups: []uint{g.ID}}); !errors.Is(err, ErrMapIPUnavailable) {
+		t.Fatalf("map creation error = %v, want ErrMapIPUnavailable", err)
 	}
 }
 

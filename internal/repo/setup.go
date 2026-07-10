@@ -23,18 +23,26 @@ type SetupInput struct {
 }
 
 func (s *Store) IsConfigured() (bool, error) {
+	s.lease.RLock()
+	defer s.lease.RUnlock()
+	return isConfiguredDB(s.db)
+}
+
+func isConfiguredDB(db *gorm.DB) (bool, error) {
 	var adminCount, settingsCount int64
-	if err := s.db.Model(&Admin{}).Count(&adminCount).Error; err != nil {
+	if err := db.Model(&Admin{}).Count(&adminCount).Error; err != nil {
 		return false, err
 	}
-	if err := s.db.Model(&Settings{}).Count(&settingsCount).Error; err != nil {
+	if err := db.Model(&Settings{}).Count(&settingsCount).Error; err != nil {
 		return false, err
 	}
 	return adminCount > 0 && settingsCount > 0, nil
 }
 
 func (s *Store) Setup(in SetupInput) error {
-	configured, err := s.IsConfigured()
+	s.lease.RLock()
+	defer s.lease.RUnlock()
+	configured, err := isConfiguredDB(s.db)
 	if err != nil {
 		return err
 	}
@@ -105,6 +113,8 @@ func (s *Store) Setup(in SetupInput) error {
 }
 
 func (s *Store) ResetAll() error {
+	s.lease.RLock()
+	defer s.lease.RUnlock()
 	return s.db.Transaction(func(tx *gorm.DB) error {
 		if err := tx.Session(&gorm.Session{AllowGlobalUpdate: true}).Delete(&DNSRecord{}).Error; err != nil {
 			return err

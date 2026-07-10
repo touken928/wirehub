@@ -115,8 +115,10 @@ export default function SetupPage() {
         admin_username: adminUsername.trim() || defaults?.admin_username,
         admin_password: adminPassword,
         listen_port: parseInt(listenPort, 10),
-        mtu: parseInt(mtu, 10) || defaults?.mtu,
-        status_interval: parseInt(statusInterval, 10) || defaults?.status_interval,
+        mtu: Number.isNaN(parseInt(mtu, 10)) ? defaults?.mtu : parseInt(mtu, 10),
+        status_interval: Number.isNaN(parseInt(statusInterval, 10))
+          ? defaults?.status_interval
+          : parseInt(statusInterval, 10),
         upstream_dns: textToUpstreamDns(upstreamDns),
       });
       setToken(token);

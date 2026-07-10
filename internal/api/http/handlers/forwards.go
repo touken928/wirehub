@@ -85,13 +85,21 @@ func DeletePortForward(s *Server, c *gin.Context) {
 		return
 	}
 	if err := s.App.DeletePortForward(id); err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		status := http.StatusInternalServerError
+		if service.IsRuntimeFailure(err) {
+			status = http.StatusServiceUnavailable
+		}
+		c.JSON(status, gin.H{"error": err.Error()})
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"ok": true})
 }
 
 func writeForwardErr(c *gin.Context, err error) {
+	if service.IsRuntimeFailure(err) {
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": err.Error()})
+		return
+	}
 	switch service.ClassifyForwardErr(err) {
 	case service.ForwardErrConflict:
 		c.JSON(http.StatusConflict, gin.H{"error": "listen port and protocol already in use"})

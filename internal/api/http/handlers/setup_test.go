@@ -3,11 +3,13 @@ package handlers
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"io"
 	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"sync"
 	"testing"
 
 	"github.com/gin-gonic/gin"
@@ -112,6 +114,42 @@ func TestSetup_InvalidTokenRejected(t *testing.T) {
 
 	if w.Code != http.StatusForbidden {
 		t.Fatalf("expected 403 for invalid token, got %d", w.Code)
+	}
+}
+
+type countingReader struct {
+	reads int
+}
+
+func (r *countingReader) Read(p []byte) (int, error) {
+	r.reads++
+	return 0, io.EOF
+}
+
+func TestSetup_InvalidTokenRejectedBeforeJSONBinding(t *testing.T) {
+	srv, _, _ := newTestServer(t)
+	body := &countingReader{}
+	c, w := testContext(t, "POST", "/api/setup?setup_token=wrong-token", body, "127.0.0.1:12345")
+	Setup(srv, c)
+
+	if w.Code != http.StatusForbidden {
+		t.Fatalf("expected 403 for invalid token, got %d", w.Code)
+	}
+	if body.reads != 0 {
+		t.Fatalf("request body was read before token rejection: %d reads", body.reads)
+	}
+}
+
+func TestRuntimeMutationErrorsMapToServiceUnavailable(t *testing.T) {
+	err := &service.RuntimeMutationError{Operation: "test mutation", Cause: errors.New("injected runtime failure")}
+	checks := []func(*gin.Context, error){writePeerErr, writeMapErr, writeForwardErr}
+	for _, write := range checks {
+		w := httptest.NewRecorder()
+		c, _ := gin.CreateTestContext(w)
+		write(c, err)
+		if w.Code != http.StatusServiceUnavailable {
+			t.Fatalf("runtime mutation status = %d, want 503", w.Code)
+		}
 	}
 }
 
@@ -280,47 +318,51 @@ func TestSetupToken_ConcurrentSafe(t *testing.T) {
 	}
 
 	// Spin up concurrent readers and writers.
-	done := make(chan struct{})
-	errs := make(chan error, 20)
+	start := make(chan struct{})
+	errs := make(chan error, 32)
+	var wg sync.WaitGroup
 
 	// Readers: call GetSetupToken + requireSetupToken (via SetupStatus)
 	readFn := func() {
-		for {
-			select {
-			case <-done:
+		defer wg.Done()
+		<-start
+		for i := 0; i < 100; i++ {
+			_ = srv.GetSetupToken()
+			c, w := testContext(t, "GET", "/api/setup/status", nil, "127.0.0.1:9999")
+			SetupStatus(srv, c)
+			if w.Code != http.StatusOK {
+				errs <- errors.New("setup status failed during token rotation")
 				return
-			default:
-				_ = srv.GetSetupToken()
-				c, w := testContext(t, "GET", "/api/setup/status", nil, "127.0.0.1:9999")
-				SetupStatus(srv, c)
-				_ = w.Code // just consume; no crash = success
 			}
 		}
 	}
 
 	// Writer: call RegenerateSetupToken (simulates Reset)
 	writeFn := func() {
+		defer wg.Done()
+		<-start
 		for i := 0; i < 10; i++ {
 			tok := srv.RegenerateSetupToken()
 			if tok == "" {
-				errs <- nil // will be caught as non-nil error below (type mismatch)
+				errs <- errors.New("setup token regeneration returned empty token")
 				return
 			}
 		}
 	}
 
+	wg.Add(1)
 	go writeFn()
 	for i := 0; i < 4; i++ {
+		wg.Add(1)
 		go readFn()
 	}
 
-	// Let them race for a bit
-	done <- struct{}{}
-	// Wait for goroutines to settle
-	_ = srv.GetSetupToken()
-
-	// If we reach here without a data race, the test passes.
-	// (The -race flag would catch actual races.)
+	close(start)
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		t.Fatal(err)
+	}
 }
 
 // ---------------------------------------------------------------------------
@@ -344,6 +386,16 @@ func TestImportDatabase_UploadSizeCheckExists(t *testing.T) {
 	ImportDatabase(srv, c)
 	if rw.Code == http.StatusInternalServerError {
 		t.Fatalf("unexpected 500 for minimal request: %s", rw.Body.String())
+	}
+}
+
+func TestExportDatabase_ReturnsErrorBeforeHeaders(t *testing.T) {
+	srv, st, _ := newTestServer(t)
+	st.SetExportFailureForTest(errors.New("injected snapshot failure"))
+	c, w := testContext(t, "GET", "/api/settings/export", nil, "127.0.0.1:12345")
+	ExportDatabase(srv, c)
+	if w.Code != http.StatusInternalServerError {
+		t.Fatalf("expected 500, got %d: %s", w.Code, w.Body.String())
 	}
 }
 
@@ -442,7 +494,7 @@ func TestReset_Success_ReturnsNewToken(t *testing.T) {
 	}
 
 	var resp struct {
-		Ok        bool   `json:"ok"`
+		Ok         bool   `json:"ok"`
 		SetupToken string `json:"setup_token"`
 	}
 	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {

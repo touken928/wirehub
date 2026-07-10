@@ -35,8 +35,13 @@ type ForwardProxy struct {
 // boundListener holds a pre-bound listener for a forward rule.
 type boundListener struct {
 	rule  ForwardRule
-	tcpLn net.Listener     // set for TCP rules
-	udpPc net.PacketConn   // set for UDP rules
+	tcpLn net.Listener   // set for TCP rules
+	udpPc net.PacketConn // set for UDP rules
+}
+
+type udpForwardSession struct {
+	backend    net.Conn
+	lastActive time.Time
 }
 
 func (bl *boundListener) close() {
@@ -243,11 +248,8 @@ func (m *ForwardProxy) serveUDP(ctx context.Context, pc net.PacketConn, rule For
 	listen := netip.AddrPortFrom(m.hubIP, uint16(rule.ListenPort))
 	log.Printf("forward udp %s -> %s:%d", listen, rule.TargetHost, rule.TargetPort)
 
-	type session struct {
-		backend    net.Conn
-		lastActive time.Time
-	}
-	sessions := make(map[string]*session)
+	sessions := make(map[string]*udpForwardSession)
+	pending := make(map[string]bool)
 	var mu sync.Mutex
 
 	buf := make([]byte, 64*1024)
@@ -285,14 +287,38 @@ func (m *ForwardProxy) serveUDP(ctx context.Context, pc net.PacketConn, rule For
 		}
 
 		key := clientAddr.String()
+		initial := append([]byte(nil), buf[:n]...)
 		mu.Lock()
 		sess, ok := sessions[key]
-		if !ok {
+		if ok {
+			sess.lastActive = time.Now()
+			mu.Unlock()
+			if _, err := sess.backend.Write(initial); err != nil {
+				mu.Lock()
+				_ = sess.backend.Close()
+				delete(sessions, key)
+				mu.Unlock()
+			}
+			continue
+		}
+		if pending[key] {
+			mu.Unlock()
+			continue
+		}
+		pending[key] = true
+		mu.Unlock()
+
+		// Resolve and dial outside the read loop so one slow new flow cannot
+		// head-of-line block unrelated UDP clients. The first datagram is copied
+		// above and delivered after the backend is ready.
+		go func(key string, client net.Addr, first []byte) {
 			addrs, resolveErr := m.resolver.ResolveForwardAddrs(rule.TargetHost)
 			if resolveErr != nil {
-				mu.Unlock()
 				log.Printf("forward udp resolve %q: %v", rule.TargetHost, resolveErr)
-				continue
+				mu.Lock()
+				delete(pending, key)
+				mu.Unlock()
+				return
 			}
 			var backend net.Conn
 			var dialErr error
@@ -304,21 +330,31 @@ func (m *ForwardProxy) serveUDP(ctx context.Context, pc net.PacketConn, rule For
 				}
 				log.Printf("forward udp dial %s: %v", target, dialErr)
 			}
-			if dialErr != nil {
+			if dialErr != nil || backend == nil {
+				mu.Lock()
+				delete(pending, key)
 				mu.Unlock()
-				continue
+				return
 			}
-			sess = &session{backend: backend, lastActive: time.Now()}
+			sess := &udpForwardSession{backend: backend, lastActive: time.Now()}
+			mu.Lock()
+			delete(pending, key)
+			if ctx.Err() != nil {
+				mu.Unlock()
+				_ = backend.Close()
+				return
+			}
 			sessions[key] = sess
-			go func(client net.Addr, back net.Conn) {
-				defer back.Close()
+			mu.Unlock()
+			go func() {
+				defer backend.Close()
 				b := make([]byte, 64*1024)
 				for {
 					if ctx.Err() != nil {
 						return
 					}
-					_ = back.SetReadDeadline(time.Now().Add(SessionIdle))
-					rn, readErr := back.Read(b)
+					_ = backend.SetReadDeadline(time.Now().Add(SessionIdle))
+					rn, readErr := backend.Read(b)
 					if readErr != nil {
 						return
 					}
@@ -326,15 +362,13 @@ func (m *ForwardProxy) serveUDP(ctx context.Context, pc net.PacketConn, rule For
 						return
 					}
 				}
-			}(clientAddr, backend)
-		}
-		sess.lastActive = time.Now()
-		mu.Unlock()
-		if _, err := sess.backend.Write(buf[:n]); err != nil {
-			mu.Lock()
-			_ = sess.backend.Close()
-			delete(sessions, key)
-			mu.Unlock()
-		}
+			}()
+			if _, err := backend.Write(first); err != nil {
+				mu.Lock()
+				delete(sessions, key)
+				mu.Unlock()
+				_ = backend.Close()
+			}
+		}(key, clientAddr, initial)
 	}
 }
