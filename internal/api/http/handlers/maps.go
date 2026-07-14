@@ -7,7 +7,6 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/touken928/wirehub/internal/api/http/dto"
 	"github.com/touken928/wirehub/internal/api/http/httputil"
-	"github.com/touken928/wirehub/internal/repo"
 	"github.com/touken928/wirehub/internal/service"
 )
 
@@ -18,12 +17,12 @@ type mapRequest struct {
 	AllowedGroupIDs []uint `json:"allowed_group_ids" binding:"required"`
 }
 
-func (req *mapRequest) toInput() repo.MapInput {
-	return repo.MapInput{
-		Name:          req.Name,
-		Slug:          req.Slug,
-		TargetHost:    req.TargetHost,
-		AllowedGroups: req.AllowedGroupIDs,
+func (req *mapRequest) toInput() service.MapInput {
+	return service.MapInput{
+		Name:            req.Name,
+		Slug:            req.Slug,
+		TargetHost:      req.TargetHost,
+		AllowedGroupIDs: req.AllowedGroupIDs,
 	}
 }
 
@@ -95,7 +94,7 @@ func writeMapErr(c *gin.Context, err error) {
 		c.JSON(http.StatusServiceUnavailable, gin.H{"error": err.Error()})
 		return
 	}
-	if service.ClassifyMapErr(err) {
+	if errors.Is(err, service.ErrMapSlugConflict) {
 		c.JSON(http.StatusConflict, gin.H{"error": err.Error()})
 		return
 	}

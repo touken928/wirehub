@@ -3,6 +3,8 @@ package ingress
 import (
 	"slices"
 	"testing"
+
+	"github.com/touken928/wirehub/internal/domain/hub"
 )
 
 func TestReservedHubPorts(t *testing.T) {
@@ -14,12 +16,12 @@ func TestReservedHubPorts(t *testing.T) {
 	}{
 		{
 			name:      "system listen ports only",
-			tunnelWeb: HubTunnelWebPort,
+			tunnelWeb: hub.HubTunnelWebPort,
 			want:      []int{53, 80},
 		},
 		{
 			name:      "includes forward listen ports",
-			tunnelWeb: HubTunnelWebPort,
+			tunnelWeb: hub.HubTunnelWebPort,
 			forwards: []ForwardRule{
 				{ListenPort: 9000},
 				{ListenPort: 9001},
@@ -36,7 +38,7 @@ func TestReservedHubPorts(t *testing.T) {
 		},
 		{
 			name:      "ignores invalid port numbers",
-			tunnelWeb: HubTunnelWebPort,
+			tunnelWeb: hub.HubTunnelWebPort,
 			forwards: []ForwardRule{
 				{ListenPort: 0},
 				{ListenPort: 70000},
@@ -57,7 +59,7 @@ func TestReservedHubPorts(t *testing.T) {
 
 func TestReservedHubPortsAlwaysIncludesDNS(t *testing.T) {
 	got := ReservedHubPorts(18080, nil)
-	if !slices.Contains(got, HubDNSPort) {
-		t.Fatalf("missing hub DNS port %d in %v", HubDNSPort, got)
+	if !slices.Contains(got, hub.HubDNSPort) {
+		t.Fatalf("missing hub DNS port %d in %v", hub.HubDNSPort, got)
 	}
 }

@@ -1,18 +1,24 @@
 package dto
 
 import (
-	"github.com/touken928/wirehub/internal/domain/map"
-	"github.com/touken928/wirehub/internal/repo"
+	"github.com/touken928/wirehub/internal/service"
 )
 
 type MapResponse struct {
-	repo.MapDetail
-	FQDN string `json:"fqdn"`
+	ID              uint   `json:"id"`
+	Name            string `json:"name"`
+	Slug            string `json:"slug"`
+	TargetHost      string `json:"target_host"`
+	VirtualIP       string `json:"virtual_ip"`
+	TargetDisplay   string `json:"target_display"`
+	AllowedGroupIDs []uint `json:"allowed_group_ids"`
+	FQDN            string `json:"fqdn"`
 }
 
-func ToMapResponse(d repo.MapDetail) MapResponse {
+func ToMapResponse(d service.MapView) MapResponse {
 	return MapResponse{
-		MapDetail: d,
-		FQDN:      mapdom.MapFQDN(d.Slug),
+		ID: d.ID, Name: d.Name, Slug: d.Slug, TargetHost: d.TargetHost,
+		VirtualIP: d.VirtualIP, TargetDisplay: d.TargetDisplay,
+		AllowedGroupIDs: d.AllowedGroupIDs, FQDN: d.FQDN,
 	}
 }

@@ -29,7 +29,7 @@ func testSettingsApp(t *testing.T) *App {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	return NewApp(st)
+	return NewApp(st, testKeyGenerator)
 }
 
 func TestChangeAdminPassword(t *testing.T) {
@@ -39,7 +39,7 @@ func TestChangeAdminPassword(t *testing.T) {
 		t.Fatalf("ChangeAdminPassword failed: %v", err)
 	}
 
-	if _, err := app.VerifyAdminPassword("admin", "newpassword123"); err != nil {
+	if _, err := app.AuthenticateAdmin("admin", "newpassword123"); err != nil {
 		t.Fatalf("new password should verify: %v", err)
 	}
 }
@@ -53,26 +53,33 @@ func TestChangeAdminPasswordRejectsWrongCurrentPassword(t *testing.T) {
 	}
 }
 
-func TestVerifyAdminPassword(t *testing.T) {
+func TestAuthenticateAdmin(t *testing.T) {
 	app := testSettingsApp(t)
 
-	admin, err := app.VerifyAdminPassword("admin", "password123")
+	admin, err := app.AuthenticateAdmin("admin", "password123")
 	if err != nil {
-		t.Fatalf("VerifyAdminPassword failed: %v", err)
+		t.Fatalf("AuthenticateAdmin failed: %v", err)
 	}
 	if admin.Username != "admin" {
 		t.Fatalf("username = %q, want admin", admin.Username)
 	}
 }
 
-func TestVerifyAdminPasswordRejectsWrongPassword(t *testing.T) {
+func TestAuthenticateAdminRejectsWrongPassword(t *testing.T) {
 	app := testSettingsApp(t)
 
 	err := func() error {
-		_, err := app.VerifyAdminPassword("admin", "wrong")
+		_, err := app.AuthenticateAdmin("admin", "wrong")
 		return err
 	}()
 	if !errors.Is(err, ErrInvalidAdminPassword) {
 		t.Fatalf("expected ErrInvalidAdminPassword, got %v", err)
+	}
+}
+
+func TestVerifyAdminPassword(t *testing.T) {
+	app := testSettingsApp(t)
+	if err := app.VerifyAdminPassword("admin", "password123"); err != nil {
+		t.Fatalf("VerifyAdminPassword failed: %v", err)
 	}
 }

@@ -1,60 +1,75 @@
 package auth
 
 import (
-	"path/filepath"
+	"errors"
+	"math"
 	"testing"
+	"time"
 
-	"github.com/touken928/wirehub/internal/config"
-	"github.com/touken928/wirehub/internal/repo"
+	"github.com/golang-jwt/jwt/v5"
+	"github.com/touken928/wirehub/internal/service"
 )
 
-// testStore creates a fresh in-memory store with one admin for testing.
-func testStore(t *testing.T) *repo.Store {
-	t.Helper()
-	dir := t.TempDir()
-	st, err := repo.New(&config.RuntimeConfig{DatabasePath: filepath.Join(dir, "wirehub.db")})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := st.Setup(repo.SetupInput{
-		Endpoint: "example.com", Subnet: "100.127.0.0/24",
-		AdminUsername: "admin", AdminPassword: "testpass123",
-		ListenPort: 8443, MTU: 1420, StatusInterval: 1,
-		ServerPrivateKey: "private", ServerPublicKey: "public",
-	}); err != nil {
-		t.Fatal(err)
-	}
-	return st
+type testSession struct {
+	password string
+	version  int
 }
 
+func (s *testSession) AuthenticateAdmin(username, password string) (service.AdminSession, error) {
+	if username != "admin" || password != s.password {
+		return service.AdminSession{}, errors.New("invalid credentials")
+	}
+	return service.AdminSession{ID: 1, Username: username, TokenVersion: s.version}, nil
+}
+
+func (s *testSession) ValidateAdminSession(id uint, tokenVersion int) (service.AdminSession, error) {
+	if id != 1 {
+		return service.AdminSession{}, errors.New("admin not found")
+	}
+	if tokenVersion != s.version {
+		return service.AdminSession{}, errors.New("token revoked")
+	}
+	return service.AdminSession{ID: id, Username: "admin", TokenVersion: s.version}, nil
+}
+
+func newTestSession() *testSession { return &testSession{password: "testpass123"} }
+
 func TestLoginAndParse_Success(t *testing.T) {
-	st := testStore(t)
-	svc := NewService("test-secret", st)
+	session := newTestSession()
+	svc := NewService("test-secret", session)
 
 	token, err := svc.Login("admin", "testpass123")
-	if err != nil {
+	if err != nil || token == "" {
 		t.Fatalf("Login failed: %v", err)
 	}
-	if token == "" {
-		t.Fatal("expected non-empty token")
-	}
-
 	claims, err := svc.ParseToken(token)
 	if err != nil {
 		t.Fatalf("ParseToken failed: %v", err)
 	}
-	if claims.Username != "admin" {
-		t.Fatalf("expected username admin, got %s", claims.Username)
+	if claims.Username != "admin" || claims.TokenVersion != 0 {
+		t.Fatalf("unexpected claims: %+v", claims)
 	}
-	if claims.TokenVersion != 0 {
-		t.Fatalf("expected token_version 0, got %d", claims.TokenVersion)
+	parsed, err := jwt.ParseWithClaims(token, &Claims{}, func(token *jwt.Token) (interface{}, error) {
+		if token.Method.Alg() != "HS256" {
+			t.Fatalf("algorithm = %s, want HS256", token.Method.Alg())
+		}
+		return []byte("test-secret"), nil
+	})
+	if err != nil || !parsed.Valid {
+		t.Fatalf("issued token did not validate: %v", err)
+	}
+	raw := parsed.Claims.(*Claims)
+	if raw.AdminID != 1 || raw.Username != "admin" || raw.TokenVersion != 0 {
+		t.Fatalf("unexpected claims: %+v", raw)
+	}
+	remaining := time.Until(raw.ExpiresAt.Time)
+	if math.Abs(remaining.Hours()-24) > 5.0/60.0 {
+		t.Fatalf("expiry is %s from now, want approximately 24h", remaining)
 	}
 }
 
 func TestParseToken_InvalidCredentials(t *testing.T) {
-	st := testStore(t)
-	svc := NewService("test-secret", st)
-
+	svc := NewService("test-secret", newTestSession())
 	if _, err := svc.Login("admin", "wrongpass"); err == nil {
 		t.Fatal("expected error for wrong password")
 	}
@@ -64,82 +79,46 @@ func TestParseToken_InvalidCredentials(t *testing.T) {
 }
 
 func TestParseToken_WrongSecret(t *testing.T) {
-	st := testStore(t)
-	svc := NewService("test-secret", st)
-
+	session := newTestSession()
+	svc := NewService("test-secret", session)
 	token, err := svc.Login("admin", "testpass123")
 	if err != nil {
 		t.Fatal(err)
 	}
-
-	svc2 := NewService("different-secret", st)
-	if _, err := svc2.ParseToken(token); err == nil {
+	if _, err := NewService("different-secret", session).ParseToken(token); err == nil {
 		t.Fatal("expected error when parsing token with wrong secret")
 	}
 }
 
 func TestTokenInvalidatedAfterPasswordChange(t *testing.T) {
-	st := testStore(t)
-	svc := NewService("test-secret", st)
-
-	// Get initial token
+	session := newTestSession()
+	svc := NewService("test-secret", session)
 	oldToken, err := svc.Login("admin", "testpass123")
-	if err != nil {
-		t.Fatalf("Login failed: %v", err)
-	}
-
-	// Old token should work before password change
-	if _, err := svc.ParseToken(oldToken); err != nil {
-		t.Fatalf("old token should work before password change: %v", err)
-	}
-
-	// Change password — this increments TokenVersion
-	admin, err := st.GetAdminByUsername("admin")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := st.UpdateAdminPassword(admin.ID, "newstrongpass1"); err != nil {
-		t.Fatalf("UpdateAdminPassword failed: %v", err)
+	if _, err := svc.ParseToken(oldToken); err != nil {
+		t.Fatalf("old token should work before password change: %v", err)
 	}
-
-	// Old token should be rejected after password change
+	session.password = "newstrongpass1"
+	session.version++
 	if _, err := svc.ParseToken(oldToken); err == nil {
 		t.Fatal("expected error: old token should be invalid after password change")
 	}
-
-	// New token should work
 	newToken, err := svc.Login("admin", "newstrongpass1")
 	if err != nil {
-		t.Fatalf("Login with new password failed: %v", err)
+		t.Fatal(err)
 	}
 	if _, err := svc.ParseToken(newToken); err != nil {
 		t.Fatalf("new token should work after password change: %v", err)
 	}
 }
 
-func TestPasswordChangeEnforcesPolicy(t *testing.T) {
-	st := testStore(t)
-
-	admin, err := st.GetAdminByUsername("admin")
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	// Attempt to set too-short password
-	err = st.UpdateAdminPassword(admin.ID, "short")
-	if err == nil {
-		t.Fatal("expected error for too-short password")
-	}
-}
-
 func TestParseToken_InvalidTokenString(t *testing.T) {
-	st := testStore(t)
-	svc := NewService("test-secret", st)
-
-	if _, err := svc.ParseToken("not-a-valid-jwt"); err == nil {
-		t.Fatal("expected error for invalid token string")
-	}
-	if _, err := svc.ParseToken(""); err == nil {
-		t.Fatal("expected error for empty token string")
+	svc := NewService("test-secret", newTestSession())
+	for _, token := range []string{"not-a-valid-jwt", ""} {
+		if _, err := svc.ParseToken(token); err == nil {
+			t.Fatalf("expected error for token %q", token)
+		}
 	}
 }

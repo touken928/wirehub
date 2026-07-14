@@ -5,6 +5,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/touken928/wirehub/internal/domain/hub"
 	"github.com/touken928/wirehub/internal/domain/policy"
 	"github.com/touken928/wirehub/internal/domain/runtime"
 	"github.com/touken928/wirehub/internal/repo"
@@ -71,7 +72,7 @@ func buildAccessPolicyFromStore(st *repo.Store) (*tun.AccessPolicy, error) {
 }
 
 func buildSyncBundleFromStore(st *repo.Store) (runtime.SyncBundle, error) {
-	return service.NewApp(st).LoadSyncBundle()
+	return service.NewApp(st, tunnel.GenerateKeyPair).LoadSyncBundle()
 }
 
 func forwardRulesFromRepo(rules []repo.PortForward) []ingress.ForwardRule {
@@ -135,7 +136,7 @@ func (env *meshEnv) applyPortForwards(t *testing.T) {
 		t.Fatal(err)
 	}
 	runtimeRules := forwardRulesFromRepo(rules)
-	env.wgMgr.ReserveHubPorts(ingress.ReservedHubPorts(ingress.HubTunnelWebPort, runtimeRules))
+	env.wgMgr.ReserveHubPorts(ingress.ReservedHubPorts(hub.HubTunnelWebPort, runtimeRules))
 	if err := env.forwardProxy.Apply(runtimeRules); err != nil {
 		t.Fatal(err)
 	}

@@ -156,7 +156,7 @@ func setupMesh(t *testing.T, specs []peerSpec, linkPairs [][2]string) (*meshEnv,
 		if err := st.CreatePeer(&peer); err != nil {
 			t.Fatal(err)
 		}
-		if err := ensurePeerDNSRecord(st, &peer); err != nil {
+		if err := ensurePeerDNSRecord(st, peer.ID, peer.DNSName, peer.WGIP); err != nil {
 			t.Fatal(err)
 		}
 		if err := wgMgr.SyncPeer(runtime.WGPeer{

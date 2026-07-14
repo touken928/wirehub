@@ -22,6 +22,7 @@ import (
 	"github.com/touken928/wirehub/internal/service"
 	"github.com/touken928/wirehub/internal/static"
 	"github.com/touken928/wirehub/internal/vpn/runtime"
+	"github.com/touken928/wirehub/internal/vpn/tunnel"
 )
 
 func accessLogFormatter(param gin.LogFormatterParams) string {
@@ -98,7 +99,7 @@ func Run(cfg *config.RuntimeConfig) error {
 		return err
 	}
 
-	app := service.NewApp(st)
+	app := service.NewApp(st, tunnel.GenerateKeyPair)
 
 	configured, err := st.IsConfigured()
 	if err != nil {
@@ -126,7 +127,7 @@ func Run(cfg *config.RuntimeConfig) error {
 	r.Use(gin.RecoveryWithWriter(&recoveryLogWriter{inner: os.Stdout}))
 	r.Use(gin.LoggerWithFormatter(accessLogFormatter))
 
-	stack := runtime.NewStack(cfg, app, r)
+	stack := runtime.NewStack(cfg, runtimeCallbacks{app: app}, r)
 	app.Hub.SetNetworkRuntime(stack)
 
 	apihttp.RegisterRoutes(r, apiSrv)

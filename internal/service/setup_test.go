@@ -34,10 +34,6 @@ func (r *transitionBarrierRuntime) Start(_ domainruntime.SyncBundle) error {
 	return nil
 }
 func (r *transitionBarrierRuntime) Stop() error             { return nil }
-func (r *transitionBarrierRuntime) ReloadSettings() error   { return nil }
-func (r *transitionBarrierRuntime) SyncPortForwards() error { return nil }
-func (r *transitionBarrierRuntime) SyncMaps() error         { return nil }
-func (r *transitionBarrierRuntime) HubListenPort() int      { return 0 }
 func (r *transitionBarrierRuntime) SetDNSUpstream([]string) {}
 
 func transitionSetupInput() SetupInput {
@@ -53,7 +49,9 @@ func TestLifecycleTransitionRevalidatesTokenAfterReset(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	app := NewApp(targetStore)
+	app := NewApp(targetStore, func() (string, string, error) {
+		return "private", "public", nil
+	})
 	app.SetSetupToken("old-token")
 	runtime := &transitionBarrierRuntime{block: true, entered: make(chan struct{}), release: make(chan struct{})}
 	app.Hub.SetNetworkRuntime(runtime)

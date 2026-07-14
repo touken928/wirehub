@@ -7,7 +7,6 @@ import (
 
 	dompolicy "github.com/touken928/wirehub/internal/domain/policy"
 	domainruntime "github.com/touken928/wirehub/internal/domain/runtime"
-	"github.com/touken928/wirehub/internal/vpn/tunnel"
 )
 
 type blockedStatsDataplane struct {
@@ -18,18 +17,12 @@ type blockedStatsDataplane struct {
 
 func (d *blockedStatsDataplane) Start(domainruntime.SyncBundle) error         { return nil }
 func (d *blockedStatsDataplane) Stop() error                                  { return nil }
-func (d *blockedStatsDataplane) ReloadSettings() error                        { return nil }
-func (d *blockedStatsDataplane) SyncPortForwards() error                      { return nil }
-func (d *blockedStatsDataplane) SyncMaps() error                              { return nil }
-func (d *blockedStatsDataplane) HubListenPort() int                           { return 0 }
-func (d *blockedStatsDataplane) SyncPeer(domainruntime.WGPeer) error          { return nil }
-func (d *blockedStatsDataplane) RemovePeer(string) error                      { return nil }
 func (d *blockedStatsDataplane) ApplyPolicy(dompolicy.AccessPolicySpec) error { return nil }
 func (d *blockedStatsDataplane) UpdateDNS(domainruntime.DNSCatalog, []domainruntime.WGPeer) error {
 	return nil
 }
 func (d *blockedStatsDataplane) FullSync(domainruntime.SyncBundle) error { return nil }
-func (d *blockedStatsDataplane) GetStats() (map[string]tunnel.PeerStats, error) {
+func (d *blockedStatsDataplane) GetStats() (map[string]domainruntime.PeerStats, error) {
 	d.once.Do(func() { close(d.started) })
 	<-d.release
 	return nil, nil
@@ -56,11 +49,11 @@ func (c *countingPublisher) Count() int {
 func TestStopStatusPoller_Idempotent(t *testing.T) {
 	h := &Hub{}
 	// Multiple stops must not panic
-	h.StopStatusPoller()
-	h.StopStatusPoller()
+	h.stopStatusPoller()
+	h.stopStatusPoller()
 	// Start then stop
 	h.StartStatusPoller(3600) // long interval so it never fires during test
-	h.StopStatusPoller()
+	h.stopStatusPoller()
 	h.StopStatusPoller() // second stop must be safe
 }
 
@@ -69,7 +62,7 @@ func TestStartStatusPoller_Idempotent(t *testing.T) {
 	// Double start must not panic or leave dangling goroutines
 	h.StartStatusPoller(3600)
 	h.StartStatusPoller(3600) // no-op, must not panic
-	h.StopStatusPoller()
+	h.stopStatusPoller()
 	// One stop is sufficient regardless of how many starts
 }
 
@@ -78,7 +71,7 @@ func TestStartStopStatusPoller_Restart(t *testing.T) {
 	// Start with short interval, stop, restart — must not panic or deadlock
 	h.StartStatusPoller(1)
 	time.Sleep(200 * time.Millisecond)
-	h.StopStatusPoller()
+	h.stopStatusPoller()
 
 	// Restart
 	h.StartStatusPoller(1)
@@ -204,20 +197,6 @@ func TestHubStatusPoller_UnsafeInterval(t *testing.T) {
 	h.StopStatusPoller()
 }
 
-func TestHubNetworkRuntime_NilSafe(t *testing.T) {
-	h := &Hub{}
-	// SyncPortForwards on nil network should not panic or return error
-	if err := h.SyncPortForwards(); err != nil {
-		t.Fatalf("SyncPortForwards on nil network should return nil, got %v", err)
-	}
-	// SetDNSUpstream on nil network must not panic
-	h.SetDNSUpstream(nil)
-	// NetworkRuntime on fresh hub must be nil
-	if nc := h.NetworkRuntime(); nc != nil {
-		t.Fatal("expected nil NetworkRuntime on fresh Hub")
-	}
-}
-
 // Test that the inner poller goroutine does not panic with a nil dataplane.
 func TestHubPollPeerStats_NilDataplane(t *testing.T) {
 	h := &Hub{}
@@ -241,3 +220,10 @@ func TestStatusPoller_NoRace(t *testing.T) {
 	time.Sleep(10 * time.Millisecond)
 	h.StopStatusPoller()
 }
+
+// Compatibility shims keep the legacy lifecycle test matrix focused on
+// behavior while production helpers remain package-private.
+func (h *Hub) StartStatusPoller(intervalSec int)    { h.startStatusPoller(intervalSec) }
+func (h *Hub) StopStatusPoller()                    { h.stopStatusPoller() }
+func (h *Hub) NetworkRuntime() networkRuntime       { return h.networkRuntime() }
+func (h *Hub) SetStatusPublisher(p statusPublisher) { h.setStatusPublisher(p) }

@@ -5,7 +5,7 @@ import (
 	"testing"
 
 	"github.com/touken928/wirehub/internal/config"
-	"github.com/touken928/wirehub/internal/vpn/core"
+	"github.com/touken928/wirehub/internal/domain/hub"
 )
 
 func TestValidateForwardTargetHost(t *testing.T) {
@@ -40,7 +40,7 @@ func TestValidateForwardTargetHost(t *testing.T) {
 }
 
 func TestValidateForwardListenPortReservesSystemListen(t *testing.T) {
-	tunnelWeb := core.HubTunnelWebPort
+	tunnelWeb := hub.HubTunnelWebPort
 
 	tests := []struct {
 		name     string
@@ -50,7 +50,7 @@ func TestValidateForwardListenPortReservesSystemListen(t *testing.T) {
 	}{
 		{
 			name:     "dns port",
-			port:     core.HubDNSPort,
+			port:     hub.HubDNSPort,
 			protocol: ForwardProtoUDP,
 			wantErr:  "reserved for hub DNS",
 		},

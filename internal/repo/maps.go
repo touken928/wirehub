@@ -23,8 +23,9 @@ type ServiceMap struct {
 func (ServiceMap) TableName() string { return "service_relays" }
 
 type MapGroupAllow struct {
-	MapID   uint `gorm:"primaryKey;column:relay_id" json:"map_id"`
-	GroupID uint `gorm:"primaryKey" json:"group_id"`
+	MapID    uint `gorm:"primaryKey;column:relay_id" json:"map_id"`
+	GroupID  uint `gorm:"primaryKey" json:"group_id"`
+	Position int  `json:"position"`
 }
 
 func (MapGroupAllow) TableName() string { return "relay_group_allows" }
@@ -90,7 +91,7 @@ func (s *Store) ListMapGroupIDs(mapID uint) ([]uint, error) {
 
 func listMapGroupIDsDB(db *gorm.DB, mapID uint) ([]uint, error) {
 	var rows []MapGroupAllow
-	if err := db.Where("relay_id = ?", mapID).Find(&rows).Error; err != nil {
+	if err := db.Where("relay_id = ?", mapID).Order("position asc, group_id asc").Find(&rows).Error; err != nil {
 		return nil, err
 	}
 	out := make([]uint, len(rows))
@@ -98,6 +99,68 @@ func listMapGroupIDsDB(db *gorm.DB, mapID uint) ([]uint, error) {
 		out[i] = r.GroupID
 	}
 	return out, nil
+}
+
+// migrateMapAllowedGroupPositionsDB backfills Position for databases created
+// before ordered map allows were introduced. SQLite rowid is the legacy insert
+// order, which is the only ordering information available in those databases.
+func migrateMapAllowedGroupPositionsDB(db *gorm.DB) error {
+	if !db.Migrator().HasColumn(&MapGroupAllow{}, "Position") {
+		if err := db.Migrator().AddColumn(&MapGroupAllow{}, "Position"); err != nil {
+			return err
+		}
+	}
+	var rows []struct {
+		MapID    uint
+		GroupID  uint
+		Position int
+		RowID    int64 `gorm:"column:rowid"`
+	}
+	if err := db.Table("relay_group_allows").Select("relay_id AS map_id, group_id, position, rowid").Order("relay_id, rowid").Find(&rows).Error; err != nil {
+		return err
+	}
+	return db.Transaction(func(tx *gorm.DB) error {
+		var current uint
+		positions := make([]struct {
+			groupID  uint
+			position int
+		}, 0)
+		flush := func() error {
+			if current == 0 || len(positions) < 2 {
+				positions = positions[:0]
+				return nil
+			}
+			legacy := true
+			for _, row := range positions {
+				if row.position != 0 {
+					legacy = false
+					break
+				}
+			}
+			if legacy {
+				for position, row := range positions {
+					if err := tx.Model(&MapGroupAllow{}).Where("relay_id = ? AND group_id = ?", current, row.groupID).Update("position", position).Error; err != nil {
+						return err
+					}
+				}
+			}
+			positions = positions[:0]
+			return nil
+		}
+		for _, row := range rows {
+			if current != row.MapID {
+				if err := flush(); err != nil {
+					return err
+				}
+				current = row.MapID
+			}
+			positions = append(positions, struct {
+				groupID  uint
+				position int
+			}{row.GroupID, row.Position})
+		}
+		return flush()
+	})
 }
 
 func (s *Store) ListMapDetails() ([]MapDetail, error) {
@@ -197,8 +260,8 @@ func (s *Store) CreateServiceMap(in MapInput) (*MapDetail, error) {
 			}
 			return err
 		}
-		for _, gid := range groupIDs {
-			if err := tx.Create(&MapGroupAllow{MapID: entry.ID, GroupID: gid}).Error; err != nil {
+		for position, gid := range groupIDs {
+			if err := tx.Create(&MapGroupAllow{MapID: entry.ID, GroupID: gid, Position: position}).Error; err != nil {
 				return err
 			}
 		}
@@ -247,8 +310,8 @@ func (s *Store) UpdateServiceMap(id uint, in MapInput) (*MapDetail, error) {
 		if err := tx.Where("relay_id = ?", id).Delete(&MapGroupAllow{}).Error; err != nil {
 			return err
 		}
-		for _, gid := range groupIDs {
-			if err := tx.Create(&MapGroupAllow{MapID: id, GroupID: gid}).Error; err != nil {
+		for position, gid := range groupIDs {
+			if err := tx.Create(&MapGroupAllow{MapID: id, GroupID: gid, Position: position}).Error; err != nil {
 				return err
 			}
 		}

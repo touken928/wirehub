@@ -8,8 +8,6 @@ import (
 
 	dompolicy "github.com/touken928/wirehub/internal/domain/policy"
 	domainruntime "github.com/touken928/wirehub/internal/domain/runtime"
-	"github.com/touken928/wirehub/internal/repo"
-	"github.com/touken928/wirehub/internal/vpn/tunnel"
 )
 
 type phase5Network struct {
@@ -38,31 +36,20 @@ func (n *phase5Network) Stop() error {
 	n.mu.Unlock()
 	return err
 }
-func (n *phase5Network) ReloadSettings() error   { return nil }
-func (n *phase5Network) SyncPortForwards() error { return nil }
-func (n *phase5Network) SyncMaps() error         { return nil }
-func (n *phase5Network) HubListenPort() int      { return 51820 }
 func (n *phase5Network) SetDNSUpstream([]string) {}
 
 type phase5Dataplane struct {
-	peerErr     error
 	fullSyncErr error
 }
 
 func (d *phase5Dataplane) Start(domainruntime.SyncBundle) error         { return nil }
 func (d *phase5Dataplane) Stop() error                                  { return nil }
-func (d *phase5Dataplane) ReloadSettings() error                        { return nil }
-func (d *phase5Dataplane) SyncPortForwards() error                      { return nil }
-func (d *phase5Dataplane) SyncMaps() error                              { return nil }
-func (d *phase5Dataplane) HubListenPort() int                           { return 0 }
-func (d *phase5Dataplane) SyncPeer(domainruntime.WGPeer) error          { return d.peerErr }
-func (d *phase5Dataplane) RemovePeer(string) error                      { return nil }
 func (d *phase5Dataplane) ApplyPolicy(dompolicy.AccessPolicySpec) error { return nil }
 func (d *phase5Dataplane) UpdateDNS(domainruntime.DNSCatalog, []domainruntime.WGPeer) error {
 	return nil
 }
-func (d *phase5Dataplane) FullSync(domainruntime.SyncBundle) error        { return d.fullSyncErr }
-func (d *phase5Dataplane) GetStats() (map[string]tunnel.PeerStats, error) { return nil, nil }
+func (d *phase5Dataplane) FullSync(domainruntime.SyncBundle) error               { return d.fullSyncErr }
+func (d *phase5Dataplane) GetStats() (map[string]domainruntime.PeerStats, error) { return nil, nil }
 
 func installPhase5Dataplane(a *App, fullSyncErr error) {
 	a.Hub.dpMu.Lock()
@@ -72,7 +59,7 @@ func installPhase5Dataplane(a *App, fullSyncErr error) {
 
 func TestPhase5SyncFailureRestartsWithSameDesiredBundle(t *testing.T) {
 	a := testApp(t)
-	g, err := a.Store().CreateGroup("users", 0, 0)
+	g, err := a.store.CreateGroup("users", 0, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -81,7 +68,7 @@ func TestPhase5SyncFailureRestartsWithSameDesiredBundle(t *testing.T) {
 	a.Hub.SetNetworkRuntime(net)
 	installPhase5Dataplane(a, errors.New("peer sync failed"))
 
-	_, err = a.CreatePeer("alpha", g.ID)
+	_, err = a.CreatePeer(CreatePeerInput{Name: "alpha", GroupID: g.ID})
 	if err != nil {
 		t.Fatalf("restart should converge: %v", err)
 	}
@@ -96,7 +83,7 @@ func TestPhase5SyncFailureRestartsWithSameDesiredBundle(t *testing.T) {
 	if stopCount != 1 || len(starts) != 1 || !reflect.DeepEqual(starts[0], bundle) {
 		t.Fatalf("restart stop=%d starts=%d bundleMatch=%v", stopCount, len(starts), len(starts) == 1 && reflect.DeepEqual(starts[0], bundle))
 	}
-	peers, err := a.Store().ListPeers()
+	peers, err := a.store.ListPeers()
 	if err != nil || len(peers) != 1 {
 		t.Fatalf("persisted peers = %d, err=%v; requested state was lost", len(peers), err)
 	}
@@ -104,7 +91,7 @@ func TestPhase5SyncFailureRestartsWithSameDesiredBundle(t *testing.T) {
 
 func TestPhase5MapAndForwardSyncFailuresPersistRequestedState(t *testing.T) {
 	a := testApp(t)
-	g, err := a.Store().CreateGroup("users", 0, 0)
+	g, err := a.store.CreateGroup("users", 0, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -113,21 +100,21 @@ func TestPhase5MapAndForwardSyncFailuresPersistRequestedState(t *testing.T) {
 	a.Hub.SetNetworkRuntime(net)
 	installPhase5Dataplane(a, errors.New("map sync failed"))
 
-	_, err = a.CreateServiceMap(repo.MapInput{Slug: "svc", TargetHost: "10.0.0.2", AllowedGroups: []uint{g.ID}})
+	_, err = a.CreateServiceMap(MapInput{Slug: "svc", TargetHost: "10.0.0.2", AllowedGroupIDs: []uint{g.ID}})
 	if err != nil {
 		t.Fatalf("map restart should converge: %v", err)
 	}
-	maps, err := a.Store().ListServiceMaps()
+	maps, err := a.store.ListServiceMaps()
 	if err != nil || len(maps) != 1 {
 		t.Fatalf("persisted maps = %d, err=%v", len(maps), err)
 	}
 
 	installPhase5Dataplane(a, errors.New("forward sync failed"))
-	_, err = a.CreatePortForward(repo.PortForwardInput{ListenPort: 19090, Protocol: "tcp", TargetHost: "10.0.0.2", TargetPort: 80})
+	_, err = a.CreatePortForward(PortForwardInput{ListenPort: 19090, Protocol: "tcp", TargetHost: "10.0.0.2", TargetPort: 80})
 	if err != nil {
 		t.Fatalf("forward restart should converge: %v", err)
 	}
-	forwards, err := a.Store().ListPortForwards()
+	forwards, err := a.store.ListPortForwards()
 	if err != nil || len(forwards) != 1 {
 		t.Fatalf("persisted forwards = %d, err=%v", len(forwards), err)
 	}
@@ -145,7 +132,7 @@ func TestPhase5SettingsRestartFailureKeepsRequestedSettings(t *testing.T) {
 	if net.stopCount != 2 {
 		t.Fatalf("runtime stop count = %d, want 2", net.stopCount)
 	}
-	settings, err := a.Store().GetSettings()
+	settings, err := a.store.GetSettings()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -156,14 +143,14 @@ func TestPhase5SettingsRestartFailureKeepsRequestedSettings(t *testing.T) {
 
 func TestPhase5StopFailureLeavesRuntimeStateUnknown(t *testing.T) {
 	a := testApp(t)
-	g, err := a.Store().CreateGroup("users", 0, 0)
+	g, err := a.store.CreateGroup("users", 0, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
 	net := &phase5Network{stopErr: errors.New("stop failed")}
 	a.Hub.SetNetworkRuntime(net)
 	installPhase5Dataplane(a, errors.New("sync failed"))
-	_, err = a.CreatePeer("unknown", g.ID)
+	_, err = a.CreatePeer(CreatePeerInput{Name: "unknown", GroupID: g.ID})
 	var recovery *RuntimeRecoveryError
 	if !errors.As(err, &recovery) {
 		t.Fatalf("error = %v, want RuntimeRecoveryError", err)

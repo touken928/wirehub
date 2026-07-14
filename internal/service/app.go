@@ -5,12 +5,12 @@ import (
 
 	domainruntime "github.com/touken928/wirehub/internal/domain/runtime"
 	"github.com/touken928/wirehub/internal/repo"
-	vpnruntime "github.com/touken928/wirehub/internal/vpn/runtime"
 )
 
 // App is the control-plane application root (persistence + network hub).
 type App struct {
 	store        *repo.Store
+	keyGenerator KeyGenerator
 	Hub          *Hub
 	Status       *StatusService
 	controlMu    sync.Mutex
@@ -38,18 +38,15 @@ func (a *App) setupTokenValid(token string) bool {
 }
 
 // NewApp wires the hub and status service to this application instance.
-func NewApp(st *repo.Store) *App {
-	a := &App{store: st}
-	a.Hub = NewHub(a)
+func NewApp(st *repo.Store, keyGenerator KeyGenerator) *App {
+	if keyGenerator == nil {
+		panic("service.NewApp requires a non-nil key generator")
+	}
+	a := &App{store: st, keyGenerator: keyGenerator}
+	a.Hub = newHub(a)
 	a.Status = newStatusService(a)
-	a.Hub.SetStatusPublisher(a.Status)
+	a.Hub.setStatusPublisher(a.Status)
 	return a
-}
-
-// Store returns the persistence store for wiring code and tests.
-// Prefer service methods in application code instead of reaching through it.
-func (a *App) Store() *repo.Store {
-	return a.store
 }
 
 // LoadSyncBundle implements runtime.Callbacks.
@@ -58,7 +55,7 @@ func (a *App) LoadSyncBundle() (domainruntime.SyncBundle, error) {
 }
 
 // OnStarted is the lifecycle bridge from vpn/runtime into service-owned interfaces.
-func (a *App) OnStarted(dp vpnruntime.Dataplane) {
+func (a *App) OnStarted(dp Dataplane) {
 	a.Hub.onStarted(dp)
 }
 

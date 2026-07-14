@@ -7,7 +7,10 @@ import (
 	"github.com/touken928/wirehub/internal/repo"
 )
 
-var ErrInvalidAdminPassword = errors.New("invalid admin password")
+var (
+	ErrInvalidAdminPassword = errors.New("invalid admin password")
+	ErrAdminSessionRevoked  = errors.New("token revoked")
+)
 
 // SettingsView is the settings page payload.
 type SettingsView struct {
@@ -78,25 +81,20 @@ func (a *App) updateMutableSettings(mtu, statusInterval int, upstream []string) 
 	if err := a.reconcileRuntime("mutable settings update", networkReload); err != nil {
 		return UpdateSettingsResult{}, err
 	}
-	a.Hub.SetDNSUpstream(settings.UpstreamDNSResolvers())
-	a.Hub.StopStatusPoller()
-	a.Hub.StartStatusPoller(settings.StatusInterval)
+	a.Hub.setDNSUpstream(settings.UpstreamDNSResolvers())
+	a.Hub.stopStatusPoller()
+	a.Hub.startStatusPoller(settings.StatusInterval)
 	return UpdateSettingsResult{RestartRequired: networkReload}, nil
 }
 
 // SetDNSUpstream updates upstream resolvers on the live DNS server when the stack is running.
-func (h *Hub) SetDNSUpstream(upstream []string) {
+func (h *Hub) setDNSUpstream(upstream []string) {
 	h.networkMu.RLock()
 	nc := h.network
 	h.networkMu.RUnlock()
 	if nc != nil {
 		nc.SetDNSUpstream(upstream)
 	}
-}
-
-// UpdateAdminPassword changes the logged-in admin password.
-func (a *App) UpdateAdminPassword(adminID uint, newPassword string) error {
-	return a.store.UpdateAdminPassword(adminID, newPassword)
 }
 
 // ChangeAdminPassword verifies the current password and updates it.
@@ -109,23 +107,6 @@ func (a *App) ChangeAdminPassword(username, currentPassword, newPassword string)
 		return ErrInvalidAdminPassword
 	}
 	return a.store.UpdateAdminPassword(admin.ID, newPassword)
-}
-
-// VerifyAdminPassword checks the current admin password and returns the admin record.
-func (a *App) VerifyAdminPassword(username, password string) (*repo.Admin, error) {
-	admin, err := a.store.GetAdminByUsername(username)
-	if err != nil {
-		return nil, err
-	}
-	if err := repo.VerifyPassword(admin.PasswordHash, password); err != nil {
-		return nil, ErrInvalidAdminPassword
-	}
-	return admin, nil
-}
-
-// GetAdminByUsername loads an admin account.
-func (a *App) GetAdminByUsername(username string) (*repo.Admin, error) {
-	return a.store.GetAdminByUsername(username)
 }
 
 // ExportDatabase streams the SQLite file to w.

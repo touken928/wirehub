@@ -3,7 +3,7 @@ package ingress
 import (
 	"sort"
 
-	"github.com/touken928/wirehub/internal/vpn/core"
+	"github.com/touken928/wirehub/internal/domain/hub"
 )
 
 // ForwardRule is an admin-configured forward (hub VPN IP:listenPort → target).
@@ -32,7 +32,7 @@ func ReservedHubPorts(tunnelWebTCPPort int, forwards []ForwardRule) []int {
 			seen[p] = struct{}{}
 		}
 	}
-	add(core.HubDNSPort)
+	add(hub.HubDNSPort)
 	add(tunnelWebTCPPort)
 	for _, p := range forwardListenPorts(forwards) {
 		add(p)

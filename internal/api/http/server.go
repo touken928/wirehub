@@ -20,6 +20,6 @@ func New(app *service.App, jwtSecret string, setupToken string, setupURLHost str
 	s.SetupURLHost = setupURLHost
 	return &Server{
 		Server: s,
-		Auth:   auth.NewService(jwtSecret, app.Store()),
+		Auth:   auth.NewService(jwtSecret, app),
 	}
 }

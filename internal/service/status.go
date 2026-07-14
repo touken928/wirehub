@@ -30,7 +30,7 @@ type StatusMessage struct {
 	Settings interface{}      `json:"settings"`
 }
 
-// StatusService builds status snapshots and implements StatusPublisher.
+// StatusService builds status snapshots and implements the internal status publisher.
 type StatusService struct {
 	app      *App
 	notifyMu sync.RWMutex
@@ -59,7 +59,7 @@ func (s *StatusService) Publish() {
 }
 
 // BuildMessage assembles the current status snapshot.
-func (s *StatusService) BuildMessage() (StatusMessage, error) {
+func (s *StatusService) buildMessage() (StatusMessage, error) {
 	peers, err := s.app.store.ListPeers()
 	if err != nil {
 		return StatusMessage{}, err
@@ -101,7 +101,7 @@ func (s *StatusService) BuildMessage() (StatusMessage, error) {
 
 // BuildJSON marshals the status snapshot for WebSocket clients.
 func (s *StatusService) BuildJSON() ([]byte, error) {
-	msg, err := s.BuildMessage()
+	msg, err := s.buildMessage()
 	if err != nil {
 		return nil, err
 	}

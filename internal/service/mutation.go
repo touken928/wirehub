@@ -58,7 +58,7 @@ func (e *RuntimeStoppedError) Error() string {
 func (e *RuntimeStoppedError) Unwrap() error { return e.Cause }
 
 func (a *App) reconcileRuntime(operation string, restart bool) error {
-	net := a.Hub.NetworkRuntime()
+	net := a.Hub.networkRuntime()
 	if net == nil {
 		return nil
 	}
@@ -88,7 +88,7 @@ func (a *App) reconcileRuntime(operation string, restart bool) error {
 }
 
 func (a *App) restartAfterRuntimeFailure(operation string, bundle domainruntime.SyncBundle, syncErr error) error {
-	net := a.Hub.NetworkRuntime()
+	net := a.Hub.networkRuntime()
 	if err := net.Stop(); err != nil {
 		return &RuntimeRecoveryError{Operation: operation, Cause: errors.Join(syncErr, err)}
 	}
@@ -104,7 +104,7 @@ func (a *App) restartAfterRuntimeFailure(operation string, bundle domainruntime.
 }
 
 func (a *App) stopAfterRuntimeFailure(operation string, cause error) error {
-	net := a.Hub.NetworkRuntime()
+	net := a.Hub.networkRuntime()
 	if net == nil {
 		return &RuntimeRecoveryError{Operation: operation, Cause: cause}
 	}

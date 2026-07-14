@@ -1,6 +1,7 @@
 package service
 
 import (
+	"fmt"
 	"github.com/touken928/wirehub/internal/config"
 	"github.com/touken928/wirehub/internal/domain/policy"
 	"github.com/touken928/wirehub/internal/domain/runtime"
@@ -33,7 +34,7 @@ func (a *App) loadSyncBundle() (runtime.SyncBundle, error) {
 		return runtime.SyncBundle{}, err
 	}
 
-	accessSpec, err := a.buildAccessPolicySpecFrom(peers, groupLinkPairs(links), groupAccessList(groups))
+	accessSpec, err := a.buildAccessPolicySpecFrom(peerEndpoints(peers), groupLinkPairs(links), groupAccessList(groups))
 	if err != nil {
 		return runtime.SyncBundle{}, err
 	}
@@ -101,30 +102,17 @@ func (a *App) loadSyncBundle() (runtime.SyncBundle, error) {
 }
 
 // ensurePeerDNSRecord creates or refreshes authoritative DNS in the database.
-func (a *App) ensurePeerDNSRecord(peer *repo.Peer) error {
-	slug := peer.DNSName
+func (a *App) ensurePeerDNSRecord(peerID uint, dnsName, wgIP string) error {
+	slug := dnsName
 	if slug == "" {
-		slug = peer.Name
+		return fmt.Errorf("peer DNS name is required")
 	}
-	peer.DNSName = slug
-	_ = a.store.DeleteDNSByPeerID(peer.ID)
+	_ = a.store.DeleteDNSByPeerID(peerID)
 	record := &repo.DNSRecord{
 		Hostname: slug,
-		IP:       peer.WGIP,
-		PeerID:   &peer.ID,
+		IP:       wgIP,
+		PeerID:   &peerID,
 		Manual:   false,
 	}
 	return a.store.CreateDNSRecord(record)
-}
-
-func (a *App) syncDNSCatalog() error {
-	dp := a.Hub.dataplane()
-	if dp == nil {
-		return nil
-	}
-	bundle, err := a.loadSyncBundle()
-	if err != nil {
-		return err
-	}
-	return dp.UpdateDNS(bundle.DNS, bundle.Peers)
 }

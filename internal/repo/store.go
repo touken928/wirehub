@@ -72,7 +72,10 @@ func (s *Store) migrate() error {
 }
 
 func migrateDB(db *gorm.DB) error {
-	return db.AutoMigrate(&Admin{}, &Settings{}, &PeerGroup{}, &GroupLink{}, &Peer{}, &DNSRecord{}, &PortForward{}, &ServiceMap{}, &MapGroupAllow{})
+	if err := db.AutoMigrate(&Admin{}, &Settings{}, &PeerGroup{}, &GroupLink{}, &Peer{}, &DNSRecord{}, &PortForward{}, &ServiceMap{}, &MapGroupAllow{}); err != nil {
+		return err
+	}
+	return migrateMapAllowedGroupPositionsDB(db)
 }
 
 func closeGormDB(db *gorm.DB) error {

@@ -210,8 +210,8 @@ func migrateGroupsDB(db *gorm.DB) error {
 	if err := db.AutoMigrate(&PeerGroup{}, &GroupLink{}); err != nil {
 		return err
 	}
-	if db.Migrator().HasColumn(&PeerGroup{}, "passive") {
-		if err := db.Migrator().DropColumn(&PeerGroup{}, "passive"); err != nil {
+	if db.Migrator().HasColumn("peer_groups", "passive") {
+		if err := db.Exec("ALTER TABLE peer_groups DROP COLUMN passive").Error; err != nil {
 			return err
 		}
 	}

@@ -7,7 +7,6 @@ import (
 
 	"github.com/touken928/wirehub/internal/config"
 	"github.com/touken928/wirehub/internal/repo"
-	"github.com/touken928/wirehub/internal/vpn/tunnel"
 )
 
 // SetupDefaults are shown on the setup page before configuration.
@@ -78,7 +77,7 @@ func (a *App) setup(in SetupInput, token string, requireToken bool) error {
 	if listenPort == 0 {
 		listenPort = config.DefaultEndpointPort
 	}
-	priv, pub, err := tunnel.GenerateKeyPair()
+	priv, pub, err := a.keyGenerator()
 	if err != nil {
 		return err
 	}
@@ -100,7 +99,7 @@ func (a *App) setup(in SetupInput, token string, requireToken bool) error {
 }
 
 func (a *App) startNetworkAfterSetup() error {
-	net := a.Hub.NetworkRuntime()
+	net := a.Hub.networkRuntime()
 	if net == nil {
 		return a.stopAfterRuntimeFailure("setup", ErrNetworkUnavailable)
 	}
@@ -143,7 +142,7 @@ func (a *App) importDatabase(tmpPath, token string, requireToken bool) error {
 	if err := a.store.ImportDatabase(tmpPath); err != nil {
 		return err
 	}
-	net := a.Hub.NetworkRuntime()
+	net := a.Hub.networkRuntime()
 	if net == nil {
 		return nil
 	}
@@ -189,7 +188,7 @@ func (a *App) ResetWithSetupToken(newToken string) error {
 func (a *App) ResetWithAdminPassword(username, password, newToken string) error {
 	a.controlMu.Lock()
 	defer a.controlMu.Unlock()
-	if _, err := a.VerifyAdminPassword(username, password); err != nil {
+	if err := a.VerifyAdminPassword(username, password); err != nil {
 		return err
 	}
 	if err := a.reset(); err != nil {
@@ -200,7 +199,7 @@ func (a *App) ResetWithAdminPassword(username, password, newToken string) error 
 }
 
 func (a *App) reset() error {
-	net := a.Hub.NetworkRuntime()
+	net := a.Hub.networkRuntime()
 	if net == nil {
 		return ErrNetworkUnavailable
 	}

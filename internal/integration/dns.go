@@ -10,17 +10,16 @@ import (
 	"golang.zx2c4.com/wireguard/tun/netstack"
 )
 
-func ensurePeerDNSRecord(st *repo.Store, peer *repo.Peer) error {
-	slug := peer.DNSName
+func ensurePeerDNSRecord(st *repo.Store, peerID uint, dnsName, wgIP string) error {
+	slug := dnsName
 	if slug == "" {
-		slug = peer.Name
+		return fmt.Errorf("peer DNS name is required")
 	}
-	peer.DNSName = slug
-	_ = st.DeleteDNSByPeerID(peer.ID)
+	_ = st.DeleteDNSByPeerID(peerID)
 	return st.CreateDNSRecord(&repo.DNSRecord{
 		Hostname: slug,
-		IP:       peer.WGIP,
-		PeerID:   &peer.ID,
+		IP:       wgIP,
+		PeerID:   &peerID,
 		Manual:   false,
 	})
 }

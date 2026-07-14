@@ -5,7 +5,7 @@ import (
 	"net"
 	"strings"
 
-	"github.com/touken928/wirehub/internal/vpn/core"
+	domainhub "github.com/touken928/wirehub/internal/domain/hub"
 )
 
 const (
@@ -69,8 +69,8 @@ func ValidateForwardListenPort(port int, tunnelWebPort int, protocol string) err
 	if err := ValidateForwardPort(port, "listen port"); err != nil {
 		return err
 	}
-	if port == core.HubDNSPort {
-		return fmt.Errorf("listen port %d is reserved for hub DNS", core.HubDNSPort)
+	if port == domainhub.HubDNSPort {
+		return fmt.Errorf("listen port %d is reserved for hub DNS", domainhub.HubDNSPort)
 	}
 	if port == tunnelWebPort && protocol == ForwardProtoTCP {
 		return fmt.Errorf("listen port %d is used by the hub web UI and API", tunnelWebPort)

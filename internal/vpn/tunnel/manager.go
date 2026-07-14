@@ -7,7 +7,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/touken928/wirehub/internal/domain/runtime"
+	domainruntime "github.com/touken928/wirehub/internal/domain/runtime"
 	"github.com/touken928/wirehub/internal/vpn/ingress"
 	vpnnetstack "github.com/touken928/wirehub/internal/vpn/netstack"
 	vpntun "github.com/touken928/wirehub/internal/vpn/tun"
@@ -16,13 +16,6 @@ import (
 	wgtun "golang.zx2c4.com/wireguard/tun"
 	"golang.zx2c4.com/wireguard/tun/netstack"
 )
-
-type PeerStats struct {
-	PublicKey     string
-	LastHandshake time.Time
-	RxBytes       int64
-	TxBytes       int64
-}
 
 type Manager struct {
 	mu         sync.RWMutex
@@ -128,7 +121,7 @@ func (m *Manager) Close() error {
 	return nil
 }
 
-func (m *Manager) SyncPeer(peer runtime.WGPeer) error {
+func (m *Manager) SyncPeer(peer domainruntime.WGPeer) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
@@ -160,7 +153,7 @@ func (m *Manager) removePeerLocked(publicKey string) error {
 	return m.dev.IpcSet(cfg)
 }
 
-func (m *Manager) SyncAll(peers []runtime.WGPeer) error {
+func (m *Manager) SyncAll(peers []domainruntime.WGPeer) error {
 	for _, p := range peers {
 		if err := m.SyncPeer(p); err != nil {
 			return err
@@ -169,7 +162,7 @@ func (m *Manager) SyncAll(peers []runtime.WGPeer) error {
 	return nil
 }
 
-func (m *Manager) GetStats() (map[string]PeerStats, error) {
+func (m *Manager) GetStats() (map[string]domainruntime.PeerStats, error) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 
@@ -180,11 +173,11 @@ func (m *Manager) GetStats() (map[string]PeerStats, error) {
 	return parseIPCStatus(status), nil
 }
 
-func parseIPCStatus(status string) map[string]PeerStats {
-	result := make(map[string]PeerStats)
+func parseIPCStatus(status string) map[string]domainruntime.PeerStats {
+	result := make(map[string]domainruntime.PeerStats)
 	lines := strings.Split(status, "\n")
 	var currentKey string
-	var stats PeerStats
+	var stats domainruntime.PeerStats
 
 	flush := func() {
 		if currentKey != "" {
@@ -205,7 +198,7 @@ func parseIPCStatus(status string) map[string]PeerStats {
 				if b64, err := hexKeyToBase64(v); err == nil {
 					currentKey = b64
 				}
-				stats = PeerStats{PublicKey: currentKey}
+				stats = domainruntime.PeerStats{PublicKey: currentKey}
 			case "last_handshake_time_sec":
 				if sec, err := parseInt64(v); err == nil && sec > 0 {
 					stats.LastHandshake = time.Unix(sec, 0)

@@ -7,9 +7,9 @@ import (
 
 	"github.com/touken928/wirehub/internal/config"
 	"github.com/touken928/wirehub/internal/domain/forward"
+	"github.com/touken928/wirehub/internal/domain/hub"
 	"github.com/touken928/wirehub/internal/domain/peer"
 	"github.com/touken928/wirehub/internal/repo"
-	"github.com/touken928/wirehub/internal/vpn/ingress"
 )
 
 func TestPortForwardTCPToPeerHostname(t *testing.T) {
@@ -29,7 +29,7 @@ func TestPortForwardTCPToPeerHostname(t *testing.T) {
 	defer stopBackend()
 
 	listenPort := freeTCPPort(t)
-	if _, err := env.store.CreatePortForward(ingress.HubTunnelWebPort, repo.PortForwardInput{
+	if _, err := env.store.CreatePortForward(hub.HubTunnelWebPort, repo.PortForwardInput{
 		ListenPort: listenPort,
 		Protocol:   forward.ForwardProtoTCP,
 		TargetHost: peer.PeerFQDN("app"),
@@ -66,7 +66,7 @@ func TestPortForwardTCPToPeerIP(t *testing.T) {
 	defer stopBackend()
 
 	listenPort := freeTCPPort(t)
-	if _, err := env.store.CreatePortForward(ingress.HubTunnelWebPort, repo.PortForwardInput{
+	if _, err := env.store.CreatePortForward(hub.HubTunnelWebPort, repo.PortForwardInput{
 		ListenPort: listenPort,
 		Protocol:   forward.ForwardProtoTCP,
 		TargetHost: svc.Peer.WGIP,
@@ -104,7 +104,7 @@ func TestPortForwardTCPViaFQDN(t *testing.T) {
 
 	listenPort := freeTCPPort(t)
 	targetHost := fmt.Sprintf("web.%s", config.DNSDomain)
-	if _, err := env.store.CreatePortForward(ingress.HubTunnelWebPort, repo.PortForwardInput{
+	if _, err := env.store.CreatePortForward(hub.HubTunnelWebPort, repo.PortForwardInput{
 		ListenPort: listenPort,
 		Protocol:   forward.ForwardProtoTCP,
 		TargetHost: targetHost,
@@ -141,7 +141,7 @@ func TestPortForwardUDPToPeer(t *testing.T) {
 	defer stopBackend()
 
 	listenPort := freeTCPPort(t)
-	if _, err := env.store.CreatePortForward(ingress.HubTunnelWebPort, repo.PortForwardInput{
+	if _, err := env.store.CreatePortForward(hub.HubTunnelWebPort, repo.PortForwardInput{
 		ListenPort: listenPort,
 		Protocol:   forward.ForwardProtoUDP,
 		TargetHost: peer.PeerFQDN("app"),
@@ -179,7 +179,7 @@ func TestPortForwardReapplyAfterUpdate(t *testing.T) {
 
 	listenPort1 := freeTCPPort(t)
 	listenPort2 := freeTCPPort(t)
-	rule, err := env.store.CreatePortForward(ingress.HubTunnelWebPort, repo.PortForwardInput{
+	rule, err := env.store.CreatePortForward(hub.HubTunnelWebPort, repo.PortForwardInput{
 		ListenPort: listenPort1,
 		Protocol:   forward.ForwardProtoTCP,
 		TargetHost: peer.PeerFQDN("app"),
@@ -199,7 +199,7 @@ func TestPortForwardReapplyAfterUpdate(t *testing.T) {
 		t.Fatalf("body = %q", body)
 	}
 
-	if _, err := env.store.UpdatePortForward(rule.ID, ingress.HubTunnelWebPort, repo.PortForwardInput{
+	if _, err := env.store.UpdatePortForward(rule.ID, hub.HubTunnelWebPort, repo.PortForwardInput{
 		ListenPort: listenPort2,
 		Protocol:   forward.ForwardProtoTCP,
 		TargetHost: peer.PeerFQDN("app"),

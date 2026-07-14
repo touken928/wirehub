@@ -1,18 +1,20 @@
 package dto
 
-import (
-	"github.com/touken928/wirehub/internal/repo"
-	"github.com/touken928/wirehub/internal/service"
-)
+import "github.com/touken928/wirehub/internal/service"
 
 type PortForwardResponse struct {
-	repo.PortForward
+	ID            uint   `json:"id"`
+	Name          string `json:"name"`
+	ListenPort    int    `json:"listen_port"`
+	Protocol      string `json:"protocol"`
+	TargetHost    string `json:"target_host"`
+	TargetPort    int    `json:"target_port"`
 	TargetDisplay string `json:"target_display"`
 }
 
-func ToPortForwardResponse(f repo.PortForward) PortForwardResponse {
+func ToPortForwardResponse(f service.PortForwardView) PortForwardResponse {
 	return PortForwardResponse{
-		PortForward:   f,
-		TargetDisplay: service.ForwardDisplayTarget(f.TargetHost, f.TargetPort),
+		ID: f.ID, Name: f.Name, ListenPort: f.ListenPort, Protocol: f.Protocol,
+		TargetHost: f.TargetHost, TargetPort: f.TargetPort, TargetDisplay: f.TargetDisplay,
 	}
 }

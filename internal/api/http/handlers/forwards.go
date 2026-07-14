@@ -6,7 +6,6 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/touken928/wirehub/internal/api/http/dto"
 	"github.com/touken928/wirehub/internal/api/http/httputil"
-	"github.com/touken928/wirehub/internal/repo"
 	"github.com/touken928/wirehub/internal/service"
 )
 
@@ -18,8 +17,8 @@ type portForwardRequest struct {
 	TargetPort int    `json:"target_port" binding:"required"`
 }
 
-func (req *portForwardRequest) toInput() repo.PortForwardInput {
-	return repo.PortForwardInput{
+func (req *portForwardRequest) toInput() service.PortForwardInput {
+	return service.PortForwardInput{
 		Name:       req.Name,
 		ListenPort: req.ListenPort,
 		Protocol:   req.Protocol,
@@ -56,7 +55,7 @@ func CreatePortForward(s *Server, c *gin.Context) {
 		writeForwardErr(c, err)
 		return
 	}
-	c.JSON(http.StatusCreated, dto.ToPortForwardResponse(*rule))
+	c.JSON(http.StatusCreated, dto.ToPortForwardResponse(rule))
 }
 
 func UpdatePortForward(s *Server, c *gin.Context) {
@@ -75,7 +74,7 @@ func UpdatePortForward(s *Server, c *gin.Context) {
 		writeForwardErr(c, err)
 		return
 	}
-	c.JSON(http.StatusOK, dto.ToPortForwardResponse(*rule))
+	c.JSON(http.StatusOK, dto.ToPortForwardResponse(rule))
 }
 
 func DeletePortForward(s *Server, c *gin.Context) {
@@ -85,11 +84,15 @@ func DeletePortForward(s *Server, c *gin.Context) {
 		return
 	}
 	if err := s.App.DeletePortForward(id); err != nil {
-		status := http.StatusInternalServerError
 		if service.IsRuntimeFailure(err) {
-			status = http.StatusServiceUnavailable
+			c.JSON(http.StatusServiceUnavailable, gin.H{"error": err.Error()})
+			return
 		}
-		c.JSON(status, gin.H{"error": err.Error()})
+		if service.ClassifyForwardErr(err) == service.ForwardErrNotFound {
+			c.JSON(http.StatusNotFound, gin.H{"error": "forward not found"})
+			return
+		}
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
 	c.JSON(http.StatusOK, gin.H{"ok": true})

@@ -26,10 +26,12 @@ type mockNetworkRuntime struct{}
 func (m *mockNetworkRuntime) Start(_ domainruntime.SyncBundle) error { return nil }
 func (m *mockNetworkRuntime) Stop() error                            { return nil }
 func (m *mockNetworkRuntime) ReloadSettings() error                  { return nil }
-func (m *mockNetworkRuntime) SyncPortForwards() error                { return nil }
-func (m *mockNetworkRuntime) SyncMaps() error                        { return nil }
 func (m *mockNetworkRuntime) HubListenPort() int                     { return 0 }
 func (m *mockNetworkRuntime) SetDNSUpstream(_ []string)              {}
+
+type stopFailureRuntime struct{ mockNetworkRuntime }
+
+func (m *stopFailureRuntime) Stop() error { return errors.New("injected stop failure") }
 
 // newTestServer creates a handler Server backed by a real SQLite store
 // in a temp directory, and returns the setup token used for protected endpoints.
@@ -40,7 +42,7 @@ func newTestServer(t *testing.T) (*Server, *repo.Store, string) {
 	if err != nil {
 		t.Fatalf("repo.New: %v", err)
 	}
-	app := service.NewApp(st)
+	app := service.NewApp(st, func() (string, string, error) { return "private", "public", nil })
 	// Generate a deterministic token for testing (in production it is random)
 	token := "test-setup-token-64-chars-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
 	srv := NewServer(app, token)
@@ -68,7 +70,7 @@ func newServerWithToken(t *testing.T, token string) (*Server, *repo.Store) {
 	if err != nil {
 		t.Fatalf("repo.New: %v", err)
 	}
-	app := service.NewApp(st)
+	app := service.NewApp(st, func() (string, string, error) { return "private", "public", nil })
 	srv := NewServer(app, token)
 	return srv, st
 }
@@ -401,7 +403,7 @@ func TestExportDatabase_ReturnsErrorBeforeHeaders(t *testing.T) {
 
 func TestChangePasswordWrongCurrentPassword(t *testing.T) {
 	srv, st := newServerWithToken(t, "some-token")
-	authSvc := auth.NewService("test-secret", st)
+	authSvc := auth.NewService("test-secret", srv.App)
 	if err := st.Setup(repo.SetupInput{
 		Endpoint:         "example.com",
 		Subnet:           "100.127.0.0/24",
@@ -413,6 +415,10 @@ func TestChangePasswordWrongCurrentPassword(t *testing.T) {
 		ServerPrivateKey: "priv",
 		ServerPublicKey:  "pub",
 	}); err != nil {
+		t.Fatal(err)
+	}
+	oldToken, err := authSvc.Login("admin", "password123")
+	if err != nil {
 		t.Fatal(err)
 	}
 
@@ -425,11 +431,14 @@ func TestChangePasswordWrongCurrentPassword(t *testing.T) {
 	if w.Code != http.StatusUnauthorized {
 		t.Fatalf("expected 401, got %d: %s", w.Code, w.Body.String())
 	}
+	if _, err := authSvc.ParseToken(oldToken); err != nil {
+		t.Fatalf("old token was revoked after failed reset: %v", err)
+	}
 }
 
 func TestResetWrongPassword(t *testing.T) {
 	srv, st := newServerWithToken(t, "some-token")
-	authSvc := auth.NewService("test-secret", st)
+	authSvc := auth.NewService("test-secret", srv.App)
 	if err := st.Setup(repo.SetupInput{
 		Endpoint:         "example.com",
 		Subnet:           "100.127.0.0/24",
@@ -443,6 +452,10 @@ func TestResetWrongPassword(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
+	oldToken, err := authSvc.Login("admin", "password123")
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	body := bytes.NewBufferString(`{"password":"wrong"}`)
 	c, w := testContext(t, "POST", "/api/admin/reset", body, "127.0.0.1:12345")
@@ -452,6 +465,43 @@ func TestResetWrongPassword(t *testing.T) {
 	Reset(srv, c)
 	if w.Code != http.StatusUnauthorized {
 		t.Fatalf("expected 401, got %d: %s", w.Code, w.Body.String())
+	}
+	if _, err := authSvc.ParseToken(oldToken); err != nil {
+		t.Fatalf("old token was revoked after failed reset: %v", err)
+	}
+}
+
+func TestResetStopFailurePreservesSetupToken(t *testing.T) {
+	oldSetupToken := "old-token-00000000000000000000000000000000"
+	srv, st := newServerWithToken(t, oldSetupToken)
+	if err := st.Setup(repo.SetupInput{
+		Endpoint: "example.com", Subnet: "100.127.0.0/24", AdminUsername: "admin", AdminPassword: "password123",
+		ListenPort: 8443, MTU: 1420, StatusInterval: 1, ServerPrivateKey: "priv", ServerPublicKey: "pub",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	srv.App.Hub.SetNetworkRuntime(&stopFailureRuntime{})
+	authSvc := auth.NewService("test-secret", srv.App)
+	oldJWT, err := authSvc.Login("admin", "password123")
+	if err != nil {
+		t.Fatal(err)
+	}
+	c, w := testContext(t, "POST", "/api/admin/reset", bytes.NewBufferString(`{"password":"password123"}`), "127.0.0.1:12345")
+	c.Set("username", "admin")
+	c.Set("auth", authSvc)
+	Reset(srv, c)
+	if w.Code != http.StatusInternalServerError || w.Body.String() != `{"error":"injected stop failure"}` {
+		t.Fatalf("got %d %q, want 500 stop failure", w.Code, w.Body.String())
+	}
+	if srv.GetSetupToken() != oldSetupToken || srv.App.SetupToken() != oldSetupToken {
+		t.Fatalf("setup token changed after failed reset: server=%q app=%q", srv.GetSetupToken(), srv.App.SetupToken())
+	}
+	if _, err := authSvc.ParseToken(oldJWT); err != nil {
+		t.Fatalf("old JWT became invalid after failed reset: %v", err)
+	}
+	configured, err := st.IsConfigured()
+	if err != nil || !configured {
+		t.Fatalf("configuration changed after failed reset: configured=%v err=%v", configured, err)
 	}
 }
 
@@ -464,7 +514,7 @@ func TestReset_Success_ReturnsNewToken(t *testing.T) {
 	// Set a display host so the log URL hint is well-formed
 	srv.SetupURLHost = "127.0.0.1:8443"
 
-	authSvc := auth.NewService("test-secret", st)
+	authSvc := auth.NewService("test-secret", srv.App)
 	if err := st.Setup(repo.SetupInput{
 		Endpoint:         "example.com",
 		Subnet:           "100.127.0.0/24",
@@ -527,7 +577,7 @@ func TestReset_Success_ReturnsNewToken(t *testing.T) {
 func TestReset_NewTokenWorksForSetup(t *testing.T) {
 	srv, st := newServerWithToken(t, "old-token-00000000000000000000000000000000")
 	srv.SetupURLHost = "127.0.0.1:8443"
-	authSvc := auth.NewService("test-secret", st)
+	authSvc := auth.NewService("test-secret", srv.App)
 	if err := st.Setup(repo.SetupInput{
 		Endpoint:         "example.com",
 		Subnet:           "100.127.0.0/24",

@@ -7,7 +7,6 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/touken928/wirehub/internal/api/http/dto"
 	"github.com/touken928/wirehub/internal/api/http/httputil"
-	"github.com/touken928/wirehub/internal/repo"
 	"github.com/touken928/wirehub/internal/service"
 )
 
@@ -28,9 +27,9 @@ func ListPeers(s *Server, c *gin.Context) {
 		return
 	}
 	if peers == nil {
-		peers = dto.EmptySlice[repo.Peer]()
+		peers = dto.EmptySlice[service.PeerView]()
 	}
-	c.JSON(http.StatusOK, dto.ToPeerResponses(s.App, peers))
+	c.JSON(http.StatusOK, dto.ToPeerResponses(peers))
 }
 
 func CreatePeer(s *Server, c *gin.Context) {
@@ -39,7 +38,7 @@ func CreatePeer(s *Server, c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
-	peer, err := s.App.CreatePeer(req.Name, req.GroupID)
+	peer, err := s.App.CreatePeer(service.CreatePeerInput{Name: req.Name, GroupID: req.GroupID})
 	if err != nil {
 		status := http.StatusInternalServerError
 		if service.IsRuntimeFailure(err) || errors.Is(err, service.ErrNetworkUnavailable) {
@@ -51,7 +50,7 @@ func CreatePeer(s *Server, c *gin.Context) {
 		return
 	}
 	s.App.NotifyStatus()
-	c.JSON(http.StatusCreated, dto.EnrichPeerResponse(s.App, *peer))
+	c.JSON(http.StatusCreated, dto.ToPeerResponse(peer))
 }
 
 func UpdatePeer(s *Server, c *gin.Context) {
@@ -69,13 +68,13 @@ func UpdatePeer(s *Server, c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "name or group_id is required"})
 		return
 	}
-	peer, err := s.App.UpdatePeerFields(id, req.Name, req.GroupID)
+	peer, err := s.App.UpdatePeerFields(id, service.UpdatePeerInput{Name: req.Name, GroupID: req.GroupID})
 	if err != nil {
 		writePeerErr(c, err)
 		return
 	}
 	s.App.NotifyStatus()
-	c.JSON(http.StatusOK, dto.EnrichPeerResponse(s.App, *peer))
+	c.JSON(http.StatusOK, dto.ToPeerResponse(peer))
 }
 
 func DeletePeer(s *Server, c *gin.Context) {
@@ -110,7 +109,7 @@ func TogglePeer(s *Server, c *gin.Context) {
 		return
 	}
 	s.App.NotifyStatus()
-	c.JSON(http.StatusOK, dto.EnrichPeerResponse(s.App, *peer))
+	c.JSON(http.StatusOK, dto.ToPeerResponse(peer))
 }
 
 func PeerConfig(s *Server, c *gin.Context) {
@@ -130,8 +129,7 @@ func PeerConfig(s *Server, c *gin.Context) {
 		c.JSON(status, gin.H{"error": err.Error()})
 		return
 	}
-	peer, _ := s.App.GetPeer(id)
-	c.JSON(http.StatusOK, gin.H{"config": conf, "filename": peer.Name + ".conf"})
+	c.JSON(http.StatusOK, gin.H{"config": conf.Config, "filename": conf.Filename})
 }
 
 func writePeerErr(c *gin.Context, err error) {

@@ -1,4 +1,4 @@
-// Package l4 is hub Layer-4 map on the VPN netstack address.
+// Package ingress provides hub Layer-4 ingress on the VPN netstack address.
 //
 // Three mechanisms share packet/port helpers but differ in how clients connect:
 //
@@ -16,12 +16,3 @@
 // TransparentTable.ReserveHubPorts must include system + forward listen ports so
 // ephemeral SNAT does not collide with them.
 package ingress
-
-import "github.com/touken928/wirehub/internal/vpn/core"
-
-const (
-	// HubDNSPort is the authoritative DNS listen port on the hub VPN address.
-	HubDNSPort = core.HubDNSPort
-	// HubTunnelWebPort is the admin UI/API listen port on the hub VPN address (inside the tunnel).
-	HubTunnelWebPort = core.HubTunnelWebPort
-)

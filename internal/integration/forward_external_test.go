@@ -9,8 +9,8 @@ import (
 	"time"
 
 	"github.com/touken928/wirehub/internal/domain/forward"
+	"github.com/touken928/wirehub/internal/domain/hub"
 	"github.com/touken928/wirehub/internal/repo"
-	"github.com/touken928/wirehub/internal/vpn/ingress"
 )
 
 func TestPortForwardTCPToHostNetworkTarget(t *testing.T) {
@@ -30,7 +30,7 @@ func TestPortForwardTCPToHostNetworkTarget(t *testing.T) {
 	defer stopBackend()
 
 	listenPort := freeTCPPort(t)
-	if _, err := env.store.CreatePortForward(ingress.HubTunnelWebPort, repo.PortForwardInput{
+	if _, err := env.store.CreatePortForward(hub.HubTunnelWebPort, repo.PortForwardInput{
 		ListenPort: listenPort,
 		Protocol:   forward.ForwardProtoTCP,
 		TargetHost: "127.0.0.1",
@@ -69,7 +69,7 @@ func TestPortForwardTCPToPublicWebPage(t *testing.T) {
 
 	targetIP := resolvePublicIPv4(t, "example.com")
 	listenPort := freeTCPPort(t)
-	if _, err := env.store.CreatePortForward(ingress.HubTunnelWebPort, repo.PortForwardInput{
+	if _, err := env.store.CreatePortForward(hub.HubTunnelWebPort, repo.PortForwardInput{
 		ListenPort: listenPort,
 		Protocol:   forward.ForwardProtoTCP,
 		TargetHost: targetIP,
@@ -113,7 +113,7 @@ func TestPortForwardTCPToPublicWebPageViaFQDN(t *testing.T) {
 	}
 
 	listenPort := freeTCPPort(t)
-	if _, err := env.store.CreatePortForward(ingress.HubTunnelWebPort, repo.PortForwardInput{
+	if _, err := env.store.CreatePortForward(hub.HubTunnelWebPort, repo.PortForwardInput{
 		ListenPort: listenPort,
 		Protocol:   forward.ForwardProtoTCP,
 		TargetHost: "example.com",
@@ -149,7 +149,7 @@ func TestPortForwardTCPToPublicAPI(t *testing.T) {
 
 	targetIP := resolvePublicIPv4(t, "httpbin.org")
 	listenPort := freeTCPPort(t)
-	if _, err := env.store.CreatePortForward(ingress.HubTunnelWebPort, repo.PortForwardInput{
+	if _, err := env.store.CreatePortForward(hub.HubTunnelWebPort, repo.PortForwardInput{
 		ListenPort: listenPort,
 		Protocol:   forward.ForwardProtoTCP,
 		TargetHost: targetIP,
@@ -195,7 +195,7 @@ func TestPortForwardTCPToPublicHTTPS(t *testing.T) {
 	}
 
 	listenPort := freeTCPPort(t)
-	if _, err := env.store.CreatePortForward(ingress.HubTunnelWebPort, repo.PortForwardInput{
+	if _, err := env.store.CreatePortForward(hub.HubTunnelWebPort, repo.PortForwardInput{
 		ListenPort: listenPort,
 		Protocol:   forward.ForwardProtoTCP,
 		TargetHost: "example.com",

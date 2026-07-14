@@ -7,11 +7,11 @@ import (
 	"testing"
 	"time"
 
-	mapdom "github.com/touken928/wirehub/internal/domain/map"
 	"github.com/touken928/wirehub/internal/domain/forward"
+	"github.com/touken928/wirehub/internal/domain/hub"
+	mapdom "github.com/touken928/wirehub/internal/domain/map"
 	"github.com/touken928/wirehub/internal/domain/peer"
 	"github.com/touken928/wirehub/internal/repo"
-	"github.com/touken928/wirehub/internal/vpn/ingress"
 	"golang.zx2c4.com/wireguard/tun/netstack"
 )
 
@@ -245,7 +245,7 @@ func TestMapTCPHostNetwork3389LikeForward(t *testing.T) {
 	})
 
 	t.Run("forward hub listen parity", func(t *testing.T) {
-		if _, err := env.store.CreatePortForward(ingress.HubTunnelWebPort, repo.PortForwardInput{
+		if _, err := env.store.CreatePortForward(hub.HubTunnelWebPort, repo.PortForwardInput{
 			ListenPort: rdpPort,
 			Protocol:   forward.ForwardProtoTCP,
 			TargetHost: "127.0.0.1",

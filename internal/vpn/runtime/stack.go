@@ -9,9 +9,9 @@ import (
 	"time"
 
 	"github.com/touken928/wirehub/internal/config"
+	"github.com/touken928/wirehub/internal/domain/hub"
 	dompolicy "github.com/touken928/wirehub/internal/domain/policy"
 	"github.com/touken928/wirehub/internal/domain/runtime"
-	"github.com/touken928/wirehub/internal/vpn/core"
 	vpndns "github.com/touken928/wirehub/internal/vpn/dns"
 	"github.com/touken928/wirehub/internal/vpn/ingress"
 	"github.com/touken928/wirehub/internal/vpn/netstack"
@@ -84,13 +84,13 @@ func (s *Stack) Start(bundle runtime.SyncBundle) error {
 
 	dnsServer := vpndns.NewServer(bundle.Settings.DNSIP, bundle.Settings.UpstreamDNS)
 	dnsServer.UpdateDNS(bundle.DNS, bundle.Peers)
-	if err := dnsServer.StartOnNetstack(tunnelMgr.Net(), bundle.Settings.DNSIP, core.HubDNSPort); err != nil {
+	if err := dnsServer.StartOnNetstack(tunnelMgr.Net(), bundle.Settings.DNSIP, hub.HubDNSPort); err != nil {
 		_ = tunnelMgr.Close()
 		s.mu.Unlock()
 		return fmt.Errorf("dns server: %w", err)
 	}
 
-	tunnelSrv, err := ingress.StartWebServer(tunnelMgr.Net(), bundle.Settings.HubIP, core.HubTunnelWebPort, s.httpHandler)
+	tunnelSrv, err := ingress.StartWebServer(tunnelMgr.Net(), bundle.Settings.HubIP, hub.HubTunnelWebPort, s.httpHandler)
 	if err != nil {
 		_ = dnsServer.Stop()
 		_ = tunnelMgr.Close()
@@ -148,7 +148,7 @@ func (s *Stack) applyIngressLocked(bundle runtime.SyncBundle) error {
 		s.mapProxy = m
 	}
 	fwd := ingressForwardRules(bundle.Forwards)
-	s.tunnelMgr.ReserveHubPorts(ingress.ReservedHubPorts(core.HubTunnelWebPort, fwd))
+	s.tunnelMgr.ReserveHubPorts(ingress.ReservedHubPorts(hub.HubTunnelWebPort, fwd))
 	if err := s.forwardProxy.Apply(fwd); err != nil {
 		return fmt.Errorf("port forwards: %w", err)
 	}
@@ -208,7 +208,7 @@ func (s *Stack) SyncPortForwards() error {
 		return nil
 	}
 	fwd := ingressForwardRules(bundle.Forwards)
-	s.tunnelMgr.ReserveHubPorts(ingress.ReservedHubPorts(core.HubTunnelWebPort, fwd))
+	s.tunnelMgr.ReserveHubPorts(ingress.ReservedHubPorts(hub.HubTunnelWebPort, fwd))
 	if s.forwardProxy == nil {
 		return nil
 	}
@@ -281,7 +281,7 @@ func (s *Stack) SetDNSUpstream(upstream []string) {
 	}
 }
 
-func (s *Stack) GetStats() (map[string]tunnel.PeerStats, error) {
+func (s *Stack) GetStats() (map[string]runtime.PeerStats, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.tunnelMgr == nil {
@@ -378,6 +378,3 @@ func (s *Stack) ReloadSettings() error {
 	}
 	return s.Start(bundle)
 }
-
-// Ensure Stack implements Dataplane.
-var _ Dataplane = (*Stack)(nil)

@@ -58,7 +58,7 @@ func CreateGroup(s *Server, c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
-	g, err := s.App.CreateGroup(req.Name, req.PosX, req.PosY)
+	g, err := s.App.CreateGroup(service.CreateGroupInput{Name: req.Name, PosX: req.PosX, PosY: req.PosY})
 	if err != nil {
 		if service.IsRuntimeFailure(err) {
 			c.JSON(http.StatusServiceUnavailable, gin.H{"error": err.Error()})
@@ -88,7 +88,7 @@ func UpdateGroup(s *Server, c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
-	g, _, err := s.App.UpdateGroupFields(id, req.Name, req.PosX, req.PosY, req.AllowIntraGroup)
+	g, err := s.App.UpdateGroup(id, service.UpdateGroupInput{Name: req.Name, PosX: req.PosX, PosY: req.PosY, AllowIntraGroup: req.AllowIntraGroup})
 	if err != nil {
 		if service.IsRuntimeFailure(err) {
 			c.JSON(http.StatusServiceUnavailable, gin.H{"error": err.Error()})
@@ -134,27 +134,7 @@ func GroupGraph(s *Server, c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
-	groupPeers := make(map[uint][]dto.PeerResponse, len(data.Groups))
-	for _, p := range data.Peers {
-		groupPeers[p.GroupID] = append(groupPeers[p.GroupID], dto.ToPeerResponse(p))
-	}
-	groupOut := make([]gin.H, 0, len(data.Groups))
-	for _, g := range data.Groups {
-		count := len(groupPeers[g.ID])
-		groupOut = append(groupOut, gin.H{
-			"id":                g.ID,
-			"name":              g.Name,
-			"pos_x":             g.PosX,
-			"pos_y":             g.PosY,
-			"allow_intra_group": g.AllowIntraGroup,
-			"member_count":      count,
-			"peers":             groupPeers[g.ID],
-		})
-	}
-	c.JSON(http.StatusOK, gin.H{
-		"groups": groupOut,
-		"links":  data.Links,
-	})
+	c.JSON(http.StatusOK, dto.ToGroupGraphResponse(data))
 }
 
 func CreateGroupLink(s *Server, c *gin.Context) {
@@ -167,7 +147,7 @@ func CreateGroupLink(s *Server, c *gin.Context) {
 	if req.Bidirectional != nil {
 		bidir = *req.Bidirectional
 	}
-	if err := s.App.CreateGroupLink(req.FromGroupID, req.ToGroupID, bidir); err != nil {
+	if err := s.App.CreateGroupLink(service.GroupLinkInput{FromGroupID: req.FromGroupID, ToGroupID: req.ToGroupID, Bidirectional: bidir}); err != nil {
 		if service.IsRuntimeFailure(err) {
 			c.JSON(http.StatusServiceUnavailable, gin.H{"error": err.Error()})
 			return
@@ -188,7 +168,7 @@ func DeleteGroupLink(s *Server, c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
-	if err := s.App.DeleteGroupLink(req.FromGroupID, req.ToGroupID); err != nil {
+	if err := s.App.DeleteGroupLink(service.GroupLinkInput{FromGroupID: req.FromGroupID, ToGroupID: req.ToGroupID, Bidirectional: req.Bidirectional != nil && *req.Bidirectional}); err != nil {
 		if service.IsRuntimeFailure(err) {
 			c.JSON(http.StatusServiceUnavailable, gin.H{"error": err.Error()})
 			return

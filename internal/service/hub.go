@@ -6,14 +6,12 @@ import (
 	"time"
 
 	domainruntime "github.com/touken928/wirehub/internal/domain/runtime"
-	"github.com/touken928/wirehub/internal/repo"
-	"github.com/touken928/wirehub/internal/vpn/tunnel"
 )
 
 var ErrNetworkUnavailable = errors.New("network runtime is not running")
 
 // StatusPublisher receives a push after peer stats are polled from WireGuard.
-type StatusPublisher interface {
+type statusPublisher interface {
 	Publish()
 }
 
@@ -22,31 +20,31 @@ type Hub struct {
 	app *App
 
 	networkMu       sync.RWMutex
-	network         NetworkRuntime
+	network         networkRuntime
 	dpMu            sync.RWMutex
 	liveDP          Dataplane
 	statusMu        sync.Mutex
 	statusStop      chan struct{}
 	statusDone      chan struct{}
 	statusRunning   bool
-	statusPublisher StatusPublisher
+	statusPublisher statusPublisher
 }
 
-func (h *Hub) SetStatusPublisher(p StatusPublisher) {
+func (h *Hub) setStatusPublisher(p statusPublisher) {
 	h.statusPublisher = p
 }
 
-func NewHub(a *App) *Hub {
+func newHub(a *App) *Hub {
 	return &Hub{app: a}
 }
 
-func (h *Hub) SetNetworkRuntime(nc NetworkRuntime) {
+func (h *Hub) SetNetworkRuntime(nc networkRuntime) {
 	h.networkMu.Lock()
 	h.network = nc
 	h.networkMu.Unlock()
 }
 
-func (h *Hub) NetworkRuntime() NetworkRuntime {
+func (h *Hub) networkRuntime() networkRuntime {
 	h.networkMu.RLock()
 	defer h.networkMu.RUnlock()
 	return h.network
@@ -63,13 +61,13 @@ func (h *Hub) onStarted(dp Dataplane) {
 	h.liveDP = dp
 	h.dpMu.Unlock()
 	if bundle, err := h.app.loadSyncBundle(); err == nil {
-		h.StartStatusPoller(bundle.Settings.StatusInterval)
+		h.startStatusPoller(bundle.Settings.StatusInterval)
 	}
 	_ = h.app.SyncAccessFilter()
 }
 
 func (h *Hub) onStopped() {
-	h.StopStatusPoller()
+	h.stopStatusPoller()
 	h.dpMu.Lock()
 	h.liveDP = nil
 	h.dpMu.Unlock()
@@ -78,7 +76,7 @@ func (h *Hub) onStopped() {
 // StartStatusPoller begins periodic peer-stats polling. It is idempotent:
 // if a poller is already running, subsequent calls are no-ops.
 // Non-positive intervals default to 1 second to avoid NewTicker panics.
-func (h *Hub) StartStatusPoller(intervalSec int) {
+func (h *Hub) startStatusPoller(intervalSec int) {
 	for {
 		h.statusMu.Lock()
 		if h.statusRunning {
@@ -129,7 +127,7 @@ func (h *Hub) StartStatusPoller(intervalSec int) {
 
 // StopStatusPoller stops a running poller. It is safe to call multiple times
 // and when no poller is running.
-func (h *Hub) StopStatusPoller() {
+func (h *Hub) stopStatusPoller() {
 	h.statusMu.Lock()
 	if !h.statusRunning {
 		done := h.statusDone
@@ -151,45 +149,6 @@ func (h *Hub) StopStatusPoller() {
 	<-done
 }
 
-// SyncPortForwards pushes port-forward rules to the live network stack.
-// The network runtime is captured under the read lock to reduce pointer-after-unlock hazards.
-func (h *Hub) SyncPortForwards() error {
-	h.networkMu.RLock()
-	nc := h.network
-	if nc == nil {
-		h.networkMu.RUnlock()
-		return nil
-	}
-	err := nc.SyncPortForwards()
-	h.networkMu.RUnlock()
-	return err
-}
-
-// SyncMaps pushes service-map state to the live network stack and refreshes ACL.
-func (h *Hub) SyncMaps() error {
-	var err error
-	h.networkMu.RLock()
-	nc := h.network
-	if nc != nil {
-		err = nc.SyncMaps()
-	}
-	h.networkMu.RUnlock()
-	if err != nil {
-		return err
-	}
-	return h.app.SyncAccessFilter()
-}
-
-// SyncRuntimeBundle loads the authoritative database bundle and publishes it
-// as one runtime snapshot after a persisted mutation.
-func (h *Hub) SyncRuntimeBundle() error {
-	bundle, err := h.app.LoadSyncBundle()
-	if err != nil {
-		return err
-	}
-	return h.syncRuntimeBundle(bundle)
-}
-
 func (h *Hub) syncRuntimeBundle(bundle domainruntime.SyncBundle) error {
 	h.dpMu.RLock()
 	dp := h.liveDP
@@ -201,7 +160,7 @@ func (h *Hub) syncRuntimeBundle(bundle domainruntime.SyncBundle) error {
 }
 
 func (h *Hub) pollPeerStats() {
-	stats, err := func() (map[string]tunnel.PeerStats, error) {
+	stats, err := func() (map[string]domainruntime.PeerStats, error) {
 		h.dpMu.RLock()
 		defer h.dpMu.RUnlock()
 		if h.liveDP == nil {
@@ -234,17 +193,3 @@ func (h *Hub) pollPeerStats() {
 		h.statusPublisher.Publish()
 	}
 }
-
-func repoPeerToWG(p *repo.Peer) domainruntime.WGPeer {
-	return domainruntime.WGPeer{
-		ID:        p.ID,
-		PublicKey: p.PublicKey,
-		WGIP:      p.WGIP,
-		DNSName:   p.DNSName,
-		GroupID:   p.GroupID,
-		Enabled:   p.Enabled,
-	}
-}
-
-// PeerStats is re-exported for callers that need tunnel stats shape.
-type PeerStats = tunnel.PeerStats

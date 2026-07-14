@@ -5,12 +5,14 @@ import (
 	"time"
 
 	"github.com/golang-jwt/jwt/v5"
-	"github.com/touken928/wirehub/internal/repo"
+	"github.com/touken928/wirehub/internal/service"
 )
 
-type adminStore interface {
-	GetAdminByUsername(username string) (*repo.Admin, error)
-	GetAdminByID(id uint) (*repo.Admin, error)
+// Session is the application boundary used by HTTP authentication. It keeps
+// persistence and password hashing outside the HTTP layer.
+type Session interface {
+	AuthenticateAdmin(username, password string) (service.AdminSession, error)
+	ValidateAdminSession(id uint, tokenVersion int) (service.AdminSession, error)
 }
 
 // Claims is the JWT payload for an admin session.
@@ -23,28 +25,25 @@ type Claims struct {
 
 // Service issues and validates admin JWTs.
 type Service struct {
-	secret string
-	store  adminStore
+	secret  string
+	session Session
 }
 
-// NewService wires JWT signing to the persistence store.
-func NewService(secret string, st adminStore) *Service {
-	return &Service{secret: secret, store: st}
+// NewService wires JWT signing to the application session boundary.
+func NewService(secret string, session Session) *Service {
+	return &Service{secret: secret, session: session}
 }
 
 // Login validates credentials and returns a bearer token.
 func (s *Service) Login(username, password string) (string, error) {
-	admin, err := s.store.GetAdminByUsername(username)
+	admin, err := s.session.AuthenticateAdmin(username, password)
 	if err != nil {
-		return "", errors.New("invalid credentials")
-	}
-	if err := repo.VerifyPassword(admin.PasswordHash, password); err != nil {
 		return "", errors.New("invalid credentials")
 	}
 	return s.issueToken(admin)
 }
 
-func (s *Service) issueToken(admin *repo.Admin) (string, error) {
+func (s *Service) issueToken(admin service.AdminSession) (string, error) {
 	claims := Claims{
 		AdminID:      admin.ID,
 		Username:     admin.Username,
@@ -72,12 +71,12 @@ func (s *Service) ParseToken(tokenStr string) (*Claims, error) {
 	if !ok || !token.Valid {
 		return nil, errors.New("invalid token")
 	}
-	admin, err := s.store.GetAdminByID(claims.AdminID)
+	_, err = s.session.ValidateAdminSession(claims.AdminID, claims.TokenVersion)
 	if err != nil {
+		if errors.Is(err, service.ErrAdminSessionRevoked) {
+			return nil, errors.New("token revoked")
+		}
 		return nil, errors.New("admin not found")
-	}
-	if claims.TokenVersion != admin.TokenVersion {
-		return nil, errors.New("token revoked")
 	}
 	return claims, nil
 }

@@ -1,5 +1,4 @@
-// Package core holds VPN data-plane constants shared across layers (no netstack imports).
-package core
+package hub
 
 const (
 	// HubDNSPort is authoritative DNS on the hub VPN address.

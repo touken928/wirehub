@@ -23,7 +23,7 @@ type blockingLifecycleCallbacks struct {
 func (c *blockingLifecycleCallbacks) LoadSyncBundle() (domainruntime.SyncBundle, error) {
 	return c.bundle, nil
 }
-func (c *blockingLifecycleCallbacks) OnStarted(_ Dataplane) {
+func (c *blockingLifecycleCallbacks) OnStarted(_ *Stack) {
 	c.mu.Lock()
 	c.events = append(c.events, "started-enter")
 	c.mu.Unlock()
@@ -48,8 +48,8 @@ func (m *mockCallbacks) LoadSyncBundle() (domainruntime.SyncBundle, error) {
 	return m.bundle, nil
 }
 
-func (m *mockCallbacks) OnStarted(_ Dataplane) {}
-func (m *mockCallbacks) OnStopped()            {}
+func (m *mockCallbacks) OnStarted(_ *Stack) {}
+func (m *mockCallbacks) OnStopped()         {}
 
 // mockResolver is a HostResolver that always resolves to a fixed address.
 type mockResolver struct {
